@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+echo "Running cargo fmt --check..."
+cargo fmt -- --check
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ Rust code is not formatted. Please run 'cargo fmt'."
+    exit 1
+fi
+
+echo "✅ All checks passed. Commit allowed."
