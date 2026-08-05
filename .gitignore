@@ -1,0 +1,14 @@
+/target
+*.stp
+.DS_Store
+assets_old
+assets/*.blend
+assets/*.blend1
+.idea
+screenshot-*.png
+/dataset/
+/install/
+/log/
+/build/
+build.sh
+env.sh

@@ -1,0 +1,82 @@
+# Bevy RoboMaster Simulator Configuration
+
+[window]
+# Rendering present mode. Use `auto_no_vsync` to exceed 60Hz for Talos/ROS2 capture.
+# Options: auto_vsync, auto_no_vsync, fifo, fifo_relaxed, mailbox, immediate
+present_mode = "immediate"
+
+[debug]
+# Turn these on only when needed; they noticeably reduce FPS.
+egui = false
+inspector = false
+# Prints FPS/frametime diagnostics to console.
+diagnostics = true
+
+[preview]
+# On-screen preview camera. Disable to avoid rendering the scene twice (preview + capture).
+enabled = true
+
+[render]
+# Expensive on large scenes; disable for higher FPS.
+shadows = true
+# Main on-screen camera anti-aliasing.
+main_camera_fxaa = true
+illuminance = 500.0
+[capture.color]
+# RGB capture resolution for existing camera pipeline.
+width = 1440
+height = 1080
+
+[capture.depth]
+# Depth capture resolution for livox-compatible point cloud output.
+width = 1280
+height = 720
+near = 0.1
+far = 80.0
+
+[livox_ros]
+enabled = true
+frame_id = "camera_link"
+publish_freq = 10.0
+points_per_second = 400000
+line_num = 20
+tag_default = 0
+intensity_default = 100.0
+
+[physics]
+substep_count = 20              # physics substeps per frame
+
+[vehicle]
+rotation_speed = 7.42            # rad/s - chassis rotation speed
+gimbal_rotation_speed = 3.0     # rad/s - gimbal rotation speed
+gimbal_pitch_limit = 0.785      # rad - gimbal pitch limit (~45 degrees)
+max_speed = 6.0                 # m/s - maximum vehicle speed
+linear_acceleration = 6.0       # m/s^2 - linear acceleration
+acceleration_exponent = 1.5    # exponent for non-linear acceleration curve
+
+[mecanum]
+wheel_radius_m = 0.076          # wheel radius (m)
+half_wheelbase_m = 0.18         # half of front-rear wheel spacing (m)
+half_trackwidth_m = 0.15        # half of left-right wheel spacing (m)
+
+[projectile]
+lifetime = 5.0                  # seconds - projectile lifetime
+speed = 25.0                    # m/s - initial speed
+cooldown = 0.05                  # seconds - fire cooldown
+diameter = 0.017                # meters - projectile diameter (17mm)
+mass = 0.0032                    # kg - projectile mass (17g)
+friction = 1.1                  # friction coefficient
+linear_damping = 0.0            # linear damping (set to 0 for physics-based drag below)
+uav_vel = 5.0
+uav_size = 0.5
+[projectile.aerodynamics]
+enabled = false                  # enable aerodynamic forces
+air_density = 1.225             # kg/m^3 - air density at sea level
+drag_coefficient = 0.22516         # Cd - smooth sphere drag coefficient
+wind = [0.0, 0.0, 0.0]          # m/s - wind velocity in world coordinates
+
+[camera]
+fov = 45.0                      # degrees - field of view
+free_move_speed = 8.0           # m/s - free camera movement speed
+follow_offset = [0.0, 3.0, 2.0] # follow camera offset
+mouse_sensitivity = 0.003       # mouse look sensitivity
