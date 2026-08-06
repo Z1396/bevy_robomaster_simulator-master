@@ -1,46 +1,49 @@
-#![allow(dead_code)] // 允许存在未使用的函数/结构体，编译不会警告报错，方便开发调试
+#![allow(dead_code)]
+// 作用：允许模块内存在未使用的结构体、函数、常量，编译器不会抛出 unused 警告
+// 开发阶段常用，避免新增逻辑暂时没调用就疯狂告警；正式发布可删掉此宏开启完整检查
 
-// 拆分业务模块
-mod auto_gen;       // 数据集自动生成模块
-mod capture;        // 画面/数据采集模块
-mod components;     // ECS 自定义组件定义
-mod config;         // 全局配置解析模块(TOML配置读取)
-mod dataset;        // 数据集落地存储模块
-mod handler;        // 碰撞命中、激活事件的事件处理器
-mod robomaster;     // 机甲主体逻辑插件包
-mod setup;          // 场景、地面、车辆初始化构建函数
-mod statistic;      // 弹丸命中统计资源
-mod systems;        // 所有业务系统(控制、瞄准、弹道、清理等)
-mod telemetry;      // 遥测数据上报
-mod util;           // 通用工具函数
+// ====================== 业务模块拆分声明 ======================
+mod auto_gen;       // 数据集全自动生成模块：自动控制机器人移动、射击、采集图像+标签数据集
+mod capture;        // 画面采集、深度纹理抓取、屏幕捕获逻辑（前面那段深度拷贝代码就在这里）
+mod components;     // 全局自定义ECS组件定义（相机模式、自瞄标记、子弹冷却组件等）
+mod config;         // TOML配置文件解析、全局仿真配置资源管理
+mod dataset;        // 数据集落地写入本地磁盘、打包存储逻辑
+mod handler;        // 事件处理器：装甲命中、机甲激活的碰撞/事件回调
+mod robomaster;     // RM机甲核心逻辑合集插件包（底盘、云台、装甲、子弹实体生成等）
+mod setup;          // 一次性初始化函数：场景、地面、载具生成
+mod statistic;      // 子弹命中统计全局资源结构体
+mod systems;        // 所有业务系统：键盘遥控、云台控制、弹道空气力学、子弹清理、截图、自瞄切换等
+mod telemetry;      // 遥测数据上报模块
+mod util;           // 通用工具函数库（坐标转换、Transform拷贝、数学工具等）
 
-// 条件编译模块：开启ros2 feature才编译ros2对接代码
+// 条件编译：仅编译时开启 ros2 特性，才编译 ros2 对接代码，避免无依赖时编译报错
 #[cfg(feature = "ros2")]
 mod ros2;
-// 条件编译：开启talos feature才编译Talos采集插件
+// 条件编译：开启 talos 采集特性才编译 Talos 高精度采集插件
 #[cfg(feature = "talos")]
 mod talos;
 
-// 引入3D物理引擎 Avian3D（Bevy官方物理库，替代旧rapier）
+// ====================== 第三方库引入 ======================
+// Avian3D：Bevy 官方主推3D物理引擎，替代旧 Rapier，负责碰撞、弹道物理、刚体运动
 use avian3d::prelude::*;
-// Bevy游戏引擎核心全部导入
+// Bevy 引擎全套基础API：ECS、实体、资源、插件、观察者、系统等
 use bevy::prelude::*;
-// 帧率诊断插件、日志性能插件
+// 帧率耗时诊断插件、日志打印帧率性能插件
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
-// Bevy渲染窗口垂直同步模式配置
+// WGPU渲染底层配置，用于修改窗口垂直同步、渲染适配器规则
 use bevy::render::settings::{InstanceFlags, RenderCreation, WgpuSettings, WgpuSettingsPriority};
 use bevy::render::{RenderPlugin, RenderSystems};
 use bevy::window::PresentMode;
-// egui 可视化调试面板插件
+// Egui 内嵌GUI调试面板
 use bevy_inspector_egui::bevy_egui::EguiPlugin;
-// 实体世界检视器插件，运行时查看所有实体、组件
+// 运行时实体检视器，可视化查看世界所有实体、挂载的组件、资源
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-// 命令行参数解析库
+// clap：命令行参数解析框架，解析启动时传入的指令参数
 use clap::Parser;
-// 原子布尔类型，多线程安全布尔标记
+// 原子布尔，多线程无锁安全布尔，用于跨线程修改自瞄开关状态
 use std::sync::atomic::AtomicBool;
 
-// 导入各个子模块内部需要的插件、结构体
+// ====================== 导入本地各个子模块对外暴露的插件、类型 ======================
 use crate::auto_gen::AutoGenPlugin;
 use crate::components::{CameraMode, FollowingType, ProjectileCooldown, SubscribeAutoAim};
 use crate::config::{ConfigPlugin, SimulationConfig};
@@ -57,95 +60,100 @@ use crate::systems::{
     update_chassis_observation, update_help_text, vehicle_controls,
 };
 
-/// 程序命令行参数结构体，使用clap解析命令行入参
+/// 命令行入参结构体，#[derive(Parser)] 由clap自动实现解析逻辑
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// 命令行参数：--auto-gen 开启数据集全自动生成模式
+    /// 启动参数：--auto-gen，开启全自动数据集生成模式
     #[arg(long)]
     auto_gen: bool,
 }
 
-// 开启ros2编译特性时，引入ros2插件
+// 开启ros2特性时，引入ROS通信插件
 #[cfg(feature = "ros2")]
 use crate::ros2::plugin::ROS2Plugin;
-// 开启talos编译特性时，引入Talos采集插件
+// 开启talos特性时引入采集插件
 #[cfg(feature = "talos")]
 use talos::TalosPlugin;
 
-/// 将配置文件中的字符串垂直同步配置，转为Bevy窗口渲染PresentMode枚举
+/// 将配置文件里的字符串配置，解析转换为 Bevy 窗口渲染同步模式 PresentMode
+/// PresentMode 控制渲染帧与显示器刷新率的同步策略
 fn present_mode_from_config(value: &str) -> Option<PresentMode> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "auto_vsync" | "vsync" => Some(PresentMode::AutoVsync),        // 自动开启垂直同步
-        "auto_no_vsync" | "no_vsync" | "novsync" => Some(PresentMode::AutoNoVsync), // 关闭垂直同步(高帧率)
+        "auto_vsync" | "vsync" => Some(PresentMode::AutoVsync),        // 自动开启垂直同步，防画面撕裂
+        "auto_no_vsync" | "no_vsync" | "novsync" => Some(PresentMode::AutoNoVsync), // 关闭垂直同步，拉高帧率
         "fifo" => Some(PresentMode::Fifo),
         "fifo_relaxed" | "fifo-relaxed" => Some(PresentMode::FifoRelaxed),
-        "mailbox" => Some(PresentMode::Mailbox), // 邮箱模式，低延迟渲染
-        "immediate" => Some(PresentMode::Immediate), // 无缓冲立刻渲染
-        _ => None, // 配置值非法返回None，外部做兜底降级
+        "mailbox" => Some(PresentMode::Mailbox), // 邮箱模式：低延迟渲染，VR/仿真常用
+        "immediate" => Some(PresentMode::Immediate), // 无渲染缓冲，立刻提交画面，延迟最低
+        _ => None, // 配置文本非法，返回None交由上层做兜底降级
     }
 }
 
-/// 判断当前系统是否运行在WSL环境（WSL显卡渲染存在兼容bug，需要特殊渲染配置）
+/// 检测当前运行环境是否为 WSL（Windows Linux子系统）
+/// WSL 的GPU转发存在兼容性缺陷，WGPU默认配置极易渲染崩溃、黑屏，需要特殊兼容配置
 fn is_wsl() -> bool {
-    // 检测WSL专属环境变量
+    // 方式1：检测WSL专属环境变量
     std::env::var_os("WSL_DISTRO_NAME").is_some()
         || std::env::var_os("WSL_INTEROP").is_some()
-        // 读取内核版本字符串，包含microsoft说明是WSL2
+        // 方式2：读取内核版本，内核带 microsoft 字段代表WSL2
         || std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|release| release.to_ascii_lowercase().contains("microsoft"))
             .unwrap_or(false)
 }
 
-/// 根据运行平台生成适配的渲染插件：WSL环境使用兼容模式渲染，规避WSL显卡bug
+/// 根据操作系统环境生成适配的 RenderPlugin
+/// WSL环境使用兼容性优先渲染配置，普通系统使用默认高性能渲染配置
 fn render_plugin_for_platform() -> RenderPlugin {
-    // Linux系统 + WSL环境，使用兼容WGPU渲染配置
+    // Linux系统 + WSL环境，启用兼容模式
     if cfg!(target_os = "linux") && is_wsl() {
         return RenderPlugin {
             render_creation: RenderCreation::Automatic(WgpuSettings {
-                // 允许使用不完全兼容的显卡适配器，修复WSL显卡初始化失败
+                // 允许使用不完全符合WebGPU标准的显卡适配器，修复WSL显卡初始化失败
                 instance_flags: InstanceFlags::default()
                     | InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
-                priority: WgpuSettingsPriority::Compatibility, // 渲染策略：兼容性优先而非性能优先
+                priority: WgpuSettingsPriority::Compatibility, // 渲染优先级：兼容性 > 性能
                 ..default()
             }),
             ..default()
         };
     }
 
-    // 普通Windows/Linux/macOS环境，使用默认渲染配置
+    // Windows / Mac / 原生Linux：默认高性能渲染配置
     RenderPlugin::default()
 }
 
-/// 条件编译talos插件时，判断是否启用Talos数据采集
+/// 仅开启 talos 编译特性时生效：判断是否启用Talos采集插件
+/// 规则：ROS2正在采集数据时默认不启动Talos，避免两路采集冲突；环境变量可强制开启
 #[cfg(feature = "talos")]
 fn should_enable_talos_plugin(app: &App) -> bool {
-    // 如果开启ROS2特性，判断ROS采集是否正在运行
     #[cfg(feature = "ros2")]
     let ros_capture_active = app
         .world()
         .contains_resource::<crate::ros2::capture::RosCaptureContext>();
-    // 未开启ROS2编译特性，则ROS采集必然未启用
     #[cfg(not(feature = "ros2"))]
     let ros_capture_active = false;
 
-    // 环境变量 DAEDALUS_FORCE_TALOS_CAPTURE=1 强制开启Talos采集
+    // 环境变量 DAEDALUS_FORCE_TALOS_CAPTURE=1 强制启用Talos采集
     let force_talos_capture = std::env::var("DAEDALUS_FORCE_TALOS_CAPTURE")
         .map(|v| v == "1")
         .unwrap_or(false);
 
-    // 逻辑：ROS采集没在运行 或者 强制开启标记打开，就启用Talos插件
+    // ROS未采集 或者 强制开启标记打开，则启用Talos
     !ros_capture_active || force_talos_capture
 }
 
 fn main() {
-    // 解析命令行启动参数
+    // 解析控制台传入的命令行参数
     let args = Args::parse();
 
-    // ========== 分支1：命令行携带 --auto-gen，进入【纯数据集自动生成模式】精简运行 ==========
+    // ==============================================
+    // 分支一：带 --auto-gen 参数，进入【纯数据集自动生成模式】
+    // 精简App，移除UI、调试面板、人机控制逻辑，最大化性能批量生成数据集
+    // ==============================================
     if args.auto_gen {
         let config = SimulationConfig::default();
-        // 读取配置里的渲染同步模式，非法配置降级为AutoNoVsync
+        // 解析垂直同步配置，非法值兜底关闭垂直同步
         let present_mode =
             present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
                 warn!(
@@ -155,34 +163,36 @@ fn main() {
                 PresentMode::AutoNoVsync
             });
 
-        // 构建极简App实例，去掉UI、调试面板，专注高速生成数据集
         App::new()
             .add_plugins((
                 DefaultPlugins
                     .set(WindowPlugin {
                         primary_window: Some(Window {
                             present_mode,
-                            fit_canvas_to_parent: true, // 窗口适配父容器尺寸
+                            fit_canvas_to_parent: true, // 窗口尺寸跟随父容器自动适配
                             ..default()
                         }),
                         ..default()
                     })
-                    .set(render_plugin_for_platform()), // 适配WSL渲染
-                PhysicsPlugins::default(), // 加载Avian3D物理引擎
+                    .set(render_plugin_for_platform()), // WSL渲染兼容
+                PhysicsPlugins::default(), // 挂载Avian3D物理引擎
             ))
-            .add_plugins(RoboMasterPlugins)  // 机甲核心逻辑插件
-            .add_plugins(ConfigPlugin)      // 配置加载插件
-            .add_observer(setup_vehicle)    // 观测器：生成机甲载具实体
-            .insert_resource(Gravity(Vec3::ZERO)) // 自动生成数据集时关闭重力，便于批量采集姿态样本
-            .insert_resource(SubstepCount(config.physics.substep_count)) // 物理子迭代步数（提升物理精度）
-            .add_plugins(AutoGenPlugin) // 数据集自动生成插件
+            .add_plugins(RoboMasterPlugins)  // 机甲基础实体插件
+            .add_plugins(ConfigPlugin)      // 加载全局配置
+            .add_observer(setup_vehicle)    // 自动生成机甲载具
+            .insert_resource(Gravity(Vec3::ZERO)) // 数据集生成阶段关闭重力，方便均匀采集各类姿态样本
+            .insert_resource(SubstepCount(config.physics.substep_count)) // 物理子迭代次数，提升弹道精度
+            .add_plugins(AutoGenPlugin) // 全自动数据集生成核心插件
             .run();
-        return; // 生成模式运行完毕直接退出main，不再执行下方完整仿真逻辑
+        // 自动生成模式运行结束，直接return，不再执行下方完整交互仿真逻辑
+        return;
     }
 
-    // ========== 分支2：默认模式，完整 RoboMaster 人机交互仿真模拟器 ==========
+    // ==============================================
+    // 分支二：默认启动模式 = 完整可交互 RM 仿真模拟器
+    // 支持键鼠遥控、云台控制、射击、调试UI、截图、数据采集、ROS联动
+    // ==============================================
     let config = SimulationConfig::default();
-    // 读取窗口垂直同步配置，非法配置兜底降级
     let present_mode = present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
         warn!(
             "Unknown window.present_mode {:?}, falling back to auto_no_vsync",
@@ -191,7 +201,8 @@ fn main() {
         PresentMode::AutoNoVsync
     });
     let mut app = App::new();
-    // 挂载默认插件集(窗口、输入、渲染、音频、事件等基础能力)+物理引擎
+
+    // 挂载基础插件集：窗口、输入、渲染、音频、事件系统 + 物理引擎
     app.add_plugins((
         DefaultPlugins
             .set(WindowPlugin {
@@ -206,7 +217,7 @@ fn main() {
         PhysicsPlugins::default(),
     ));
 
-    // 如果配置开启egui调试UI，则挂载EGUI面板 + 实体世界检视器
+    // 配置开启调试EGUI面板时，加载EGUI + 实体检视器
     if config.debug.egui {
         app.add_plugins(EguiPlugin::default());
         if config.debug.inspector {
@@ -214,36 +225,41 @@ fn main() {
         }
     }
 
-    // 挂载业务插件
+    // 挂载业务插件合集
     app.add_plugins(RoboMasterPlugins)
-        .add_plugins(DatasetPlugin)       // 数据集保存插件
-        .add_plugins(ConfigPlugin)        // 全局配置插件
-        // 初始化全局资源(常驻数据，不属于任何实体)
+        .add_plugins(DatasetPlugin)       // 数据集落地存储
+        .add_plugins(ConfigPlugin)        // TOML配置加载
+
+        // 初始化全局常驻资源（不属于任何实体，全局唯一）
         .init_resource::<CameraMode>()
         .init_resource::<ProjectileStatistics>()
         .init_resource::<ChassisObservationFrame>()
         .init_resource::<PreviousKinematicState>()
-        // 允许Inspector插件查看该资源结构
+        // 允许Inspector插件反射查看该资源结构
         .register_type::<ProjectileStatistics>()
-        // 开启真实重力加速度
-        .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
+
+        .insert_resource(Gravity(Vec3::NEG_Y * 9.81)) // 开启真实重力 9.81m/s²
         .insert_resource(SubstepCount(config.physics.substep_count))
-        // 自动瞄准订阅开关，原子布尔保证多线程安全修改
+        // 自瞄全局开关，原子布尔支持多线程安全修改
         .insert_resource(SubscribeAutoAim(AtomicBool::new(false)))
-        // 弹丸发射冷却计时器，读取配置文件中的冷却时长
+        // 子弹发射冷却计时器，从配置读取冷却时长
         .insert_resource(ProjectileCooldown(Timer::from_seconds(
             config.projectile.cooldown,
             TimerMode::Once,
         )))
-        // Startup阶段运行的一次性初始化系统
+
+        // Startup生命周期：游戏启动仅运行一次的初始化系统
         .add_systems(Startup, (setup, setup_projectile))
-        // 事件观测器：触发对应事件时自动执行函数
-        .add_observer(setup_ground)       // 生成地面场景
-        .add_observer(setup_vehicle)       // 生成机甲载具
-        .add_observer(setup_collision)     // 全局碰撞层配置
-        .add_observer(on_hit)              // 命中装甲事件回调
-        .add_observer(on_activate)         // 机甲激活生成事件回调
-        // 划分Update阶段执行顺序：输入 → 游戏逻辑 → 相机更新 → 垃圾清理，串行执行避免时序错乱
+
+        // 事件观察者：对应事件触发时自动执行函数
+        .add_observer(setup_ground)       // 生成地面平面
+        .add_observer(setup_vehicle)       // 生成我方机甲实体
+        .add_observer(setup_collision)     // 全局碰撞层分组配置
+        .add_observer(on_hit)              // 子弹命中装甲事件处理
+        .add_observer(on_activate)         // 机甲被激活生成时的回调
+
+        // ====================== 严格划分 Update 阶段顺序，链式串行执行，避免时序错乱 ======================
+        // 执行顺序：输入采集 → 游戏逻辑计算 → 相机位置更新 → 垃圾清理
         .configure_sets(
             Update,
             (
@@ -254,25 +270,27 @@ fn main() {
             )
                 .chain(),
         )
-        // Update输入阶段：所有按键、遥控器输入控制系统
+        // 向各个阶段挂载对应业务系统
         .add_systems(
             Update,
             (
-                // Input阶段系统集合
+                // Input阶段：所有输入控制系统
                 (
                     auto_aim_switch,
                     following_controls,
                     switch_slapper_control,
-                    // 仅非自由视角时，启用底盘键盘控制
+                    // 自由视角模式下禁用底盘键盘控制
                     vehicle_controls.run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
                     remote_vehicle_controls,
                     gimbal_controls,
                     remote_gimbal_controls,
                 )
                     .in_set(GameplaySystems::Input),
-                // GameLogic阶段：外观切换、帮助文本更新
+
+                // GameLogic阶段：外观切换、UI帮助文本更新
                 (change_appearance, update_help_text).in_set(GameplaySystems::GameLogic),
-                // Camera阶段：自由视角控制 / 跟随机甲视角控制，在渲染前更新相机位置
+
+                // Camera阶段：更新相机位置，必须在渲染之前执行
                 (
                     freecam_controls.run_if(|mode: Res<CameraMode>| mode.0 == FollowingType::Free),
                     systems::update_camera_follow
@@ -280,7 +298,8 @@ fn main() {
                 )
                     .in_set(GameplaySystems::Camera)
                     .before(RenderSystems::Render),
-                // Cleanup阶段：过期弹丸清理、F2截图、截图异步保存
+
+                // Cleanup阶段：过期子弹销毁、F2截图触发、截图异步保存
                 (
                     cleanup_projectiles,
                     screenshot_on_f2
@@ -290,24 +309,29 @@ fn main() {
                     .in_set(GameplaySystems::Cleanup),
             ),
         )
-        // PostUpdate阶段：变换传播完毕后，采集底盘观测数据
+
+        // PostUpdate阶段：所有实体Transform传播完毕之后，采集底盘观测数据
         .add_systems(
             PostUpdate,
             update_chassis_observation.after(TransformSystems::Propagate),
         )
-        // 空格按下时发射弹丸，必须等待世界坐标Transform传播完成再生成子弹
+
+        // 空格键发射子弹：必须等待Transform传播完成，才能拿到机甲最新世界坐标生成子弹
         .add_systems(
             PostUpdate,
             projectile_launch
                 .after(TransformSystems::Propagate)
                 .run_if(|keyboard: Res<ButtonInput<KeyCode>>| keyboard.pressed(KeyCode::Space)),
         )
-        // 无人机发射系统
+
+        // 无人机投放系统同样等待坐标更新完成
         .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))
-        // FixedUpdate固定物理帧率更新：子弹空气动力学（恒定步长保证弹道物理稳定）
+
+        // FixedUpdate 固定物理帧率更新：子弹空气动力学
+        // FixedUpdate 步长恒定，不受帧率波动影响，保证弹道物理结果稳定
         .add_systems(FixedUpdate, projectile_aerodynamics);
 
-    // 配置开启性能诊断时，挂载帧率打印插件
+    // 配置开启性能诊断，挂载帧率耗时打印插件
     if config.debug.diagnostics {
         app.add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -315,7 +339,7 @@ fn main() {
         ));
     }
 
-    // 开启ros2编译特性，挂载ROS2通信插件
+    // 条件编译挂载ROS2插件
     #[cfg(feature = "ros2")]
     {
         app.add_plugins(ROS2Plugin::default());
@@ -326,7 +350,7 @@ fn main() {
         info!("ROS2 integration disabled");
     }
 
-    // 开启talos编译特性，判断条件后挂载Talos采集插件
+    // 条件编译挂载Talos采集插件（互斥ROS采集）
     #[cfg(feature = "talos")]
     {
         if should_enable_talos_plugin(&app) {
@@ -340,6 +364,6 @@ fn main() {
         }
     }
 
-    // 启动bevy游戏循环
+    // 启动Bevy主游戏循环，阻塞运行
     app.run();
 }
