@@ -9,6 +9,7 @@ pub use crate::robomaster::armor::construct::*;
 pub use crate::robomaster::armor::marker::*;
 use bevy::app::plugin_group;
 
+// 使用 plugin_group! 宏定义装甲插件组，统一注册装甲构造和碰撞检测两个插件
 plugin_group! {
     pub struct ArmorPlugins {
         :ArmorConstructorPlugin,

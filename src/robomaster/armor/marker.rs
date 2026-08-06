@@ -9,8 +9,13 @@ use bevy::mesh::Mesh;
 use bevy::prelude::{Component, Deref, DerefMut};
 
 #[derive(Component, Deref, DerefMut, Clone)]
+/// 装甲标记点组件，存储 4 个标记点的三维坐标，用于定位和识别装甲
 pub struct MarkerData(pub [Vec3; 4]);
 
+/// 从装甲 Mesh 中提取 4 个标记点
+///
+/// 要求网格必须恰好包含 4 个顶点，否则会 panic。
+/// 内部调用 extract_vertices 获取顶点列表，然后转换为固定大小数组。
 pub fn extract_markers(mesh: &Mesh) -> Option<[Vec3; 4]> {
     let vertices = extract_vertices(mesh)?;
     if vertices.len() != 4 {
