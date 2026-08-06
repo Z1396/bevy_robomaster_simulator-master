@@ -8,21 +8,44 @@
 //   4. 发布采用 mpsc 通道 + 异步任务池，订阅采用独立线程轮询
 // ============================================================================
 
+// Bevy 基础：App应用、全局资源Resource
 use bevy::prelude::{App, Resource};
+// Bevy 内置异步线程池，用来托管 ROS2 节点阻塞自旋循环
 use bevy::tasks::AsyncComputeTaskPool;
+// 轻量化异步流工具 StreamExt，用来遍历 mpsc 接收流
 use bevy::tasks::futures_lite::StreamExt;
+// block_on：在同步代码里阻塞等待异步Future完成
 use bevy::tasks::futures_lite::future::block_on;
+
+// futures 异步通道工具：SinkExt 用于发送消息
 use futures::SinkExt;
+// 多生产者单消费者异步通道 mpsc，用来在 ROS 异步线程 ↔ Bevy 主线程之间传递消息
 use futures::channel::mpsc;
 use futures::channel::mpsc::{Sender, TryRecvError};
-use r2r::geometry_msgs::msg::PoseStamped;
-use r2r::rm_interfaces::msg::GimbalCmd;
-use r2r::sensor_msgs::msg::{CameraInfo, CompressedImage, Image, PointCloud2};
-use r2r::std_msgs::msg::String as RosString;
-use r2r::tf2_msgs::msg::TFMessage;
-use r2r::visualization_msgs::msg::Marker;
-use r2r::{Node, QosProfile, WrappedTypesupport};
+
+// ROS2 消息类型导入（r2r 库封装的 ROS2 原生消息）
+use r2r::geometry_msgs::msg::PoseStamped;          // 带时间戳的位姿消息（手眼标定、定位位姿）
+use r2r::rm_interfaces::msg::GimbalCmd;            // 自定义 RM 云台控制指令（yaw/pitch 角度指令）
+use r2r::sensor_msgs::msg::{
+    CameraInfo,        // 相机内参、畸变参数
+    CompressedImage,   // 压缩图像(jpeg/png)
+    Image,             // 原始未压缩图像
+    PointCloud2        // 点云数据
+};
+use r2r::std_msgs::msg::String as RosString;       // ROS 字符串指令（启停指令、模式切换）
+use r2r::tf2_msgs::msg::TFMessage;                 // TF 坐标变换消息（坐标系转换、手眼 TF）
+use r2r::visualization_msgs::msg::Marker;          // RViz 可视化标记（装甲框、边界、调试线条）
+
+// r2r ROS2 核心类型
+use r2r::{
+    Node,               // ROS2 节点实例
+    QosProfile,         // ROS2 QOS 服务质量配置（可靠/尽力投递、 durability）
+    WrappedTypesupport  // 消息类型支撑 trait，r2r 内部序列化依赖
+};
+
+// 线程安全原子布尔：标记 ROS 后台线程是否需要停止
 use std::sync::atomic::AtomicBool;
+// 多线程共享容器：Arc 跨线程所有权，Mutex 互斥锁保护共享数据
 use std::sync::{Arc, Mutex};
 
 /// 话题发布器资源：封装 mpsc 通道的发送端，提供非阻塞的 `publish` 接口。
