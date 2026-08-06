@@ -342,6 +342,7 @@ impl TechCoreStep5Lights {
     }
 }
 
+// 默认第五步灯光配置：目标段为第 1 段，能量单元段为中间段。
 impl Default for TechCoreStep5Lights {
     fn default() -> Self {
         Self {
@@ -352,6 +353,7 @@ impl Default for TechCoreStep5Lights {
     }
 }
 
+// 流水灯激活状态：指定单个段索引或所有段全亮。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum FlowActivation {
     Segment(usize),
@@ -359,20 +361,27 @@ enum FlowActivation {
 }
 
 fn flow_activation(elapsed_secs: f64) -> FlowActivation {
+    // 确保时间非负，避免负时间导致的计算错误
     let elapsed_secs = elapsed_secs.max(0.0);
+    // 计算当前所处的流水灯步进索引
     let step = (elapsed_secs * FLOW_SEGMENT_HZ).floor() as usize;
     let forward_len = FIRST_LIGHT_SEGMENT_COUNT;
+    // 完整往返 (forward + backward) 的步数
     let round_trip_len = forward_len * 2;
 
     if step < forward_len {
+        // 正向阶段：从第 0 段向第 N-1 段依次点亮
         FlowActivation::Segment(step)
     } else if step < round_trip_len {
+        // 反向阶段：从第 N-1 段向第 0 段依次熄灭 (折返效果)
         FlowActivation::Segment(round_trip_len - 1 - step)
     } else {
+        // 往返完成后所有段全亮
         FlowActivation::All
     }
 }
 
+// 生成流水灯当前活跃段的 JSON 描述，包含左右两侧的段索引。
 fn flow_active_segments_json(elapsed_secs: f64) -> Value {
     fn segment_json(side: &'static str, index: usize) -> Value {
         json!({
@@ -383,9 +392,11 @@ fn flow_active_segments_json(elapsed_secs: f64) -> Value {
 
     match flow_activation(elapsed_secs) {
         FlowActivation::Segment(index) => {
+            // 单个段激活时，左右两侧对应索引同时亮起
             json!([segment_json("left", index), segment_json("right", index),])
         }
         FlowActivation::All => Value::Array(
+            // 所有段激活时，生成左右两侧所有段的完整列表
             (0..FIRST_LIGHT_SEGMENT_COUNT)
                 .flat_map(|index| [segment_json("left", index), segment_json("right", index)])
                 .collect(),
@@ -393,6 +404,8 @@ fn flow_active_segments_json(elapsed_secs: f64) -> Value {
     }
 }
 
+// 生成单个灯段左右两侧的 JSON 描述对，包含颜色和角色信息。
+// 用于第五步组装灯光中描述目标段和能量单元段的详细状态。
 fn segment_pair_json(
     segment: TechCoreFirstLightSegment,
     color: &'static str,
@@ -414,6 +427,9 @@ fn segment_pair_json(
     ]
 }
 
+// 生成第五步组装阶段活跃段的 JSON 描述。
+// 组装进行中时，目标段显示队伍色，能量单元段显示白色 (如果与目标段不同)；
+// 组装完成时，目标段显示绿色。
 fn step5_active_segments_json(
     team: Team,
     assembly: AssemblyLightProgram,
@@ -424,12 +440,14 @@ fn step5_active_segments_json(
 
     match assembly {
         AssemblyLightProgram::InProgress => {
+            // 目标段显示队伍色，标识需要组装到的位置
             segments.extend(segment_pair_json(
                 target,
                 LightColor::Team.as_str_for_team(team),
                 "target",
             ));
 
+            // 能量单元段显示白色，标识当前能量单元位置
             let energy_unit = step5_lights.energy_unit();
             if energy_unit != target {
                 segments.extend(segment_pair_json(
@@ -440,6 +458,7 @@ fn step5_active_segments_json(
             }
         }
         AssemblyLightProgram::Completed => {
+            // 组装完成后，目标段显示绿色
             segments.extend(segment_pair_json(
                 target,
                 LightColor::Green.as_str_for_team(team),
@@ -629,6 +648,7 @@ impl TechCorePhase {
     }
 }
 
+// 将 Team 枚举转换为 JSON 字符串标识。
 fn team_name(team: Team) -> &'static str {
     match team {
         Team::Red => "red",
@@ -636,6 +656,8 @@ fn team_name(team: Team) -> &'static str {
     }
 }
 
+// 生成单个灯光组的完整 JSON 描述，包含队伍、组号、程序和活跃颜色等信息。
+// 对于第一组灯光，额外包含活跃段信息 (流水灯或组装指示)。
 fn light_json_value(
     phase: TechCorePhase,
     team: Team,
@@ -644,6 +666,7 @@ fn light_json_value(
     step5_lights: TechCoreStep5Lights,
 ) -> Value {
     let program = phase.programs()[group.index()];
+    // 解析活跃颜色：组装进行中为 "mixed"，组装完成取绿色，其他情况由程序计算
     let active_color = match program {
         LightProgram::Assembly(AssemblyLightProgram::InProgress) => "mixed",
         LightProgram::Assembly(AssemblyLightProgram::Completed) => {
@@ -662,6 +685,7 @@ fn light_json_value(
         "active_color": active_color,
     });
 
+    // 第一组流水灯模式：添加活跃段信息
     if matches!(program, LightProgram::Flow { .. }) && group == TechCoreLightGroup::First {
         if let Some(object) = value.as_object_mut() {
             object.insert(
@@ -671,6 +695,7 @@ fn light_json_value(
         }
     }
 
+    // 第一组组装模式：添加目标段和能量单元段的详细信息
     if let LightProgram::Assembly(assembly) = program {
         if group == TechCoreLightGroup::First {
             if let Some(object) = value.as_object_mut() {
@@ -685,11 +710,13 @@ fn light_json_value(
     value
 }
 
+// 生成单个科技核心的完整阶段 JSON 描述，包含阶段标识和红蓝双方所有灯光组的信息。
 fn tech_core_phase_json_value(
     phase: TechCorePhase,
     elapsed_secs: f64,
     step5_lights: TechCoreStep5Lights,
 ) -> Value {
+    // 预分配容量：红蓝两队 x 三组灯光 = 6 个灯光组
     let mut lights = Vec::with_capacity(6);
     for team in [Team::Red, Team::Blue] {
         for group in TechCoreLightGroup::ALL {
@@ -798,14 +825,21 @@ where
     .to_string()
 }
 
+// 第一组灯光的实体引用集合，包含整体式灯环和左右两侧的分段灯带。
+// 如果场景中存在分段式灯带 (left/right)，则优先使用分段控制；
+// 否则回退到整体式灯环 (whole) 进行整体颜色控制。
 #[derive(Debug, Clone, Copy)]
 struct FirstLightSet {
+    // 整体式灯环实体，当没有分段灯带时使用。
     whole: Option<Entity>,
+    // 左侧分段灯带，每个元素对应一个灯段实体。
     left: [Option<Entity>; FIRST_LIGHT_SEGMENT_COUNT],
+    // 右侧分段灯带，每个元素对应一个灯段实体。
     right: [Option<Entity>; FIRST_LIGHT_SEGMENT_COUNT],
 }
 
 impl FirstLightSet {
+    // 创建新的 FirstLightSet 实例。
     fn new(
         whole: Option<Entity>,
         left: [Option<Entity>; FIRST_LIGHT_SEGMENT_COUNT],
@@ -814,6 +848,7 @@ impl FirstLightSet {
         Self { whole, left, right }
     }
 
+    // 检查是否存在任何分段灯带实体。
     fn has_segments(&self) -> bool {
         self.left
             .iter()
@@ -821,6 +856,7 @@ impl FirstLightSet {
             .any(Option::is_some)
     }
 
+    // 返回缺失的分段灯带名称列表，用于日志警告。
     fn missing_segments(&self, prefix: &str) -> Vec<String> {
         let mut missing = Vec::new();
 
@@ -835,6 +871,7 @@ impl FirstLightSet {
         missing
     }
 
+    // 返回所有存在的分段灯带实体的迭代器。
     fn segment_entities(&self) -> impl Iterator<Item = Entity> + '_ {
         self.left
             .iter()
@@ -842,6 +879,8 @@ impl FirstLightSet {
             .filter_map(|entity| *entity)
     }
 
+    // 将所有灯光实体 (分段或整体) 设置为指定材质。
+    // 优先使用分段灯带，如果没有分段则使用整体式灯环。
     fn assign_all(
         &self,
         handle: Handle<StandardMaterial>,
@@ -849,14 +888,17 @@ impl FirstLightSet {
         mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
     ) {
         if self.has_segments() {
+            // 遍历所有分段灯带实体，逐个设置材质
             for entity in self.segment_entities() {
                 assign_material(entity, handle.clone(), children, mesh_materials);
             }
         } else if let Some(entity) = self.whole {
+            // 没有分段灯带时，使用整体式灯环
             assign_material(entity, handle, children, mesh_materials);
         }
     }
 
+    // 应用流水灯效果：先关闭所有段，再根据流水灯激活状态点亮对应段。
     fn assign_flow(
         &self,
         team: Team,
@@ -866,26 +908,31 @@ impl FirstLightSet {
         children: &Query<&Children>,
         mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
     ) {
+        // 如果没有分段灯带，使用整体颜色 (回退模式)
         if !self.has_segments() {
             self.assign_all(handles.resolve_color(team, color), children, mesh_materials);
             return;
         }
 
+        // 先关闭所有段
         self.assign_all(handles.off.clone(), children, mesh_materials);
         let active_handle = handles.resolve_color(team, color);
 
         match flow_activation(elapsed_secs) {
             FlowActivation::Segment(index) => {
+                // 仅点亮当前活跃的左右对应段
                 for entity in [self.left[index], self.right[index]].into_iter().flatten() {
                     assign_material(entity, active_handle.clone(), children, mesh_materials);
                 }
             }
             FlowActivation::All => {
+                // 所有段全亮
                 self.assign_all(active_handle, children, mesh_materials);
             }
         }
     }
 
+    // 为指定灯段的左右两侧同时设置材质。
     fn assign_segment_pair(
         &self,
         segment: TechCoreFirstLightSegment,
@@ -899,6 +946,9 @@ impl FirstLightSet {
         }
     }
 
+    // 应用第五步组装灯光效果。
+    // 组装进行中：目标段显示队伍色，能量单元段显示白色。
+    // 组装完成：目标段显示绿色。
     fn assign_assembly(
         &self,
         team: Team,
@@ -908,6 +958,7 @@ impl FirstLightSet {
         children: &Query<&Children>,
         mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
     ) {
+        // 如果没有分段灯带，使用整体颜色回退
         if !self.has_segments() {
             let fallback_color = match assembly {
                 AssemblyLightProgram::InProgress => LightColor::Team,
@@ -921,6 +972,7 @@ impl FirstLightSet {
             return;
         }
 
+        // 先关闭所有段，然后按需点亮目标段和能量单元段
         self.assign_all(handles.off.clone(), children, mesh_materials);
 
         match assembly {
@@ -928,6 +980,7 @@ impl FirstLightSet {
                 let target = step5_lights.target();
                 let energy_unit = step5_lights.energy_unit();
 
+                // 能量单元段显示白色 (如果与目标段不同)
                 if energy_unit != target {
                     self.assign_segment_pair(
                         energy_unit,
@@ -937,6 +990,7 @@ impl FirstLightSet {
                     );
                 }
 
+                // 目标段显示队伍色
                 self.assign_segment_pair(
                     target,
                     handles.resolve_color(team, LightColor::Team),
@@ -945,6 +999,7 @@ impl FirstLightSet {
                 );
             }
             AssemblyLightProgram::Completed => {
+                // 组装完成后，目标段显示绿色
                 self.assign_segment_pair(
                     step5_lights.target(),
                     handles.resolve_color(team, LightColor::Green),
@@ -955,6 +1010,7 @@ impl FirstLightSet {
         }
     }
 
+    // 根据灯光程序类型分发到对应的材质分配方法。
     fn assign_program(
         &self,
         team: Team,
@@ -980,6 +1036,7 @@ impl FirstLightSet {
                 );
             }
             _ => {
+                // Off, Solid, Blink 等模式：统一通过 resolve 解析颜色并设置
                 let handle = handles.resolve(team, program, elapsed_secs);
                 self.assign_all(handle, children, mesh_materials);
             }
@@ -987,11 +1044,16 @@ impl FirstLightSet {
     }
 }
 
+// 单方队伍的三组灯光实体引用集合。
 #[derive(Debug, Clone, Copy)]
 struct TeamCoreLights {
+    // 所属队伍 (红方或蓝方)。
     team: Team,
+    // 第一组灯光 (分段式流光灯带) 的实体引用。
     first: FirstLightSet,
+    // 第二组灯光 (整体式灯环) 的实体句柄。
     second: Entity,
+    // 第三组灯光 (整体式灯环) 的实体句柄。
     third: Entity,
 }
 
@@ -1006,17 +1068,36 @@ impl TeamCoreLights {
     }
 }
 
+/// 科技核心组件，管理科技核心的灯光状态和阶段切换。
+///
+/// 该组件存储红蓝双方的灯光实体引用、当前阶段、阶段开始时间以及
+/// 第五步组装的灯光配置。每帧由 `update_tech_core_lights` 系统
+/// 根据当前阶段和已用时间更新灯光材质。外部系统可通过 `set_phase`
+/// 等方法控制比赛阶段推进。
 #[derive(Component, Debug)]
 pub struct TechCore {
+    /// 当前阶段。
     phase: TechCorePhase,
+    /// 上一次渲染的阶段，用于检测阶段变化以重置阶段计时器。
     last_rendered_phase: TechCorePhase,
+    /// 当前阶段开始的时间戳 (秒)，用于计算阶段内已用时间。
     phase_started_at_secs: f64,
+    /// 第五步组装的灯光配置 (目标段和能量单元段)。
     step5_lights: TechCoreStep5Lights,
+    /// 红方灯光组引用。
     red: TeamCoreLights,
+    /// 蓝方灯光组引用。
     blue: TeamCoreLights,
 }
 
 impl TechCore {
+    /// 创建新的科技核心组件，初始阶段为 `MatchRunningIdle`。
+    ///
+    /// 参数：
+    /// - `red`: 红方灯光组引用。
+    /// - `blue`: 蓝方灯光组引用。
+    ///
+    /// 返回值：初始化后的 `TechCore` 实例。
     fn new(red: TeamCoreLights, blue: TeamCoreLights) -> Self {
         Self {
             phase: TechCorePhase::MatchRunningIdle,
@@ -1028,60 +1109,106 @@ impl TechCore {
         }
     }
 
+    /// 返回当前阶段。
     pub fn phase(&self) -> TechCorePhase {
         self.phase
     }
 
+    /// 设置当前阶段。
+    ///
+    /// 参数：
+    /// - `phase`: 要设置的新阶段。灯光更新系统会在下一帧根据新阶段更新灯光效果。
     pub fn set_phase(&mut self, phase: TechCorePhase) {
         self.phase = phase;
     }
 
+    /// 返回当前第五步组装的灯光配置。
+    ///
+    /// 返回值：目标段和能量单元段的配置。
     pub const fn step5_lights(&self) -> TechCoreStep5Lights {
         self.step5_lights
     }
 
+    /// 设置第五步组装的灯光配置。
+    ///
+    /// 参数：
+    /// - `step5_lights`: 新的灯光配置，包含目标段和能量单元段。
     pub fn set_step5_lights(&mut self, step5_lights: TechCoreStep5Lights) {
         self.step5_lights = step5_lights;
     }
 
+    /// 设置第五步组装的目标灯段。
+    ///
+    /// 参数：
+    /// - `segment`: 目标灯段，组装完成后显示绿色。
     pub fn set_step5_target_segment(&mut self, segment: TechCoreFirstLightSegment) {
         self.step5_lights.target = segment;
     }
 
+    /// 设置第五步组装的能量单元灯段。
+    ///
+    /// 参数：
+    /// - `segment`: 能量单元灯段，组装进行中显示白色。
     pub fn set_step5_energy_unit_segment(&mut self, segment: TechCoreFirstLightSegment) {
         self.step5_lights.energy_unit = segment;
     }
 
+    /// 通过弧度角设置第五步组装的目标灯段。
+    ///
+    /// 参数：
+    /// - `radians`: 弧度角度值，将自动映射到最近的灯段。
     pub fn set_step5_target_angle_radians(&mut self, radians: f64) {
         self.set_step5_target_segment(TechCoreFirstLightSegment::from_angle_radians(radians));
     }
 
+    /// 通过弧度角设置第五步组装的能量单元灯段。
+    ///
+    /// 参数：
+    /// - `radians`: 弧度角度值，将自动映射到最近的灯段。
     pub fn set_step5_energy_unit_angle_radians(&mut self, radians: f64) {
         self.set_step5_energy_unit_segment(TechCoreFirstLightSegment::from_angle_radians(radians));
     }
 
+    /// 通过角度 (角度制) 设置第五步组装的目标灯段。
+    ///
+    /// 参数：
+    /// - `degrees`: 角度值 (0-360)，将自动映射到最近的灯段。
     pub fn set_step5_target_angle_degrees(&mut self, degrees: f64) {
         self.set_step5_target_segment(TechCoreFirstLightSegment::from_angle_degrees(degrees));
     }
 
+    /// 通过角度 (角度制) 设置第五步组装的能量单元灯段。
+    ///
+    /// 参数：
+    /// - `degrees`: 角度值 (0-360)，将自动映射到最近的灯段。
     pub fn set_step5_energy_unit_angle_degrees(&mut self, degrees: f64) {
         self.set_step5_energy_unit_segment(TechCoreFirstLightSegment::from_angle_degrees(degrees));
     }
 
+    /// 将当前阶段推进到调试序列中的下一个阶段。
+    ///
+    /// 用于调试快捷键 (Shift+C) 触发阶段切换，方便测试各阶段的灯光效果。
+    /// 阶段按照 `DEBUG_SEQUENCE` 定义的顺序循环推进。
     pub fn advance_debug(&mut self) {
         self.phase = self.phase.next_debug();
     }
 
+    // 返回当前阶段内已过去的时间 (秒)。如果阶段已变化 (尚未渲染新阶段)，返回 0。
     fn phase_elapsed_secs(&self, elapsed_secs: f64) -> f64 {
         if self.phase == self.last_rendered_phase {
+            // 阶段未变化，计算从阶段开始到现在的经过时间
             (elapsed_secs - self.phase_started_at_secs).max(0.0)
         } else {
+            // 阶段已变化但尚未渲染，返回 0 使灯光从初始状态开始
             0.0
         }
     }
 
+    // 渲染阶段计时器：检测阶段变化，在阶段切换时重置计时器。
+    // 返回当前阶段内已过去的时间，用于灯光相位计算。
     fn render_elapsed_secs(&mut self, elapsed_secs: f64) -> f64 {
         if self.phase != self.last_rendered_phase {
+            // 阶段切换时，记录新阶段的开始时间
             self.last_rendered_phase = self.phase;
             self.phase_started_at_secs = elapsed_secs;
         }
@@ -1089,11 +1216,14 @@ impl TechCore {
         self.phase_elapsed_secs(elapsed_secs)
     }
 
+    // 返回红蓝双方灯光组的数组，用于遍历更新。
     fn teams(&self) -> [TeamCoreLights; 2] {
         [self.red, self.blue]
     }
 }
 
+// 预创建的材质句柄集合，用于快速切换灯光颜色。
+// 包含关闭、白色、红色、蓝色、绿色五种材质，避免每帧重复创建。
 #[derive(Clone)]
 struct TechCoreMaterialHandles {
     off: Handle<StandardMaterial>,
@@ -1104,6 +1234,7 @@ struct TechCoreMaterialHandles {
 }
 
 impl TechCoreMaterialHandles {
+    // 创建所有预定义灯光材质，初始化时一次性创建以减少运行时开销。
     fn new(materials: &mut Assets<StandardMaterial>) -> Self {
         Self {
             off: materials.add(material(0.02, 0.02, 0.02, 0.0)),
@@ -1114,12 +1245,15 @@ impl TechCoreMaterialHandles {
         }
     }
 
+    // 根据灯光程序和已用时间解析对应的材质句柄。
+    // 先通过 active_color 获取当前活跃颜色，再映射到具体材质。
     fn resolve(
         &self,
         team: Team,
         program: LightProgram,
         elapsed_secs: f64,
     ) -> Handle<StandardMaterial> {
+        // 如果灯光当前熄灭，返回关闭材质
         let Some(color) = program.active_color(elapsed_secs) else {
             return self.off.clone();
         };
@@ -1127,6 +1261,7 @@ impl TechCoreMaterialHandles {
         self.resolve_color(team, color)
     }
 
+    // 将 LightColor 枚举映射到具体的材质句柄。
     fn resolve_color(&self, team: Team, color: LightColor) -> Handle<StandardMaterial> {
         match color {
             LightColor::White => self.white.clone(),
@@ -1139,6 +1274,8 @@ impl TechCoreMaterialHandles {
     }
 }
 
+// 创建灯光材质，使用 base_color 控制颜色，emissive 控制自发光强度和颜色。
+// emissive_exposure_weight 设为 -1.0 使自发光不受曝光影响，保持稳定的灯光效果。
 fn material(red: f32, green: f32, blue: f32, emissive_strength: f32) -> StandardMaterial {
     StandardMaterial {
         base_color: Color::srgb(red, green, blue),
@@ -1153,6 +1290,9 @@ fn material(red: f32, green: f32, blue: f32, emissive_strength: f32) -> Standard
     }
 }
 
+// 在场景实体的名称映射中查找第一组灯光 (First) 的实体引用。
+// 按命名约定 {prefix}_L_{n} 和 {prefix}_R_{n} 查找左右两侧的分段灯带，
+// 同时查找整体式灯环 {prefix} 作为回退。
 fn find_first_light_set(name_map: &HashMap<String, Entity>, prefix: &str) -> FirstLightSet {
     let mut left = [None; FIRST_LIGHT_SEGMENT_COUNT];
     let mut right = [None; FIRST_LIGHT_SEGMENT_COUNT];
@@ -1165,6 +1305,9 @@ fn find_first_light_set(name_map: &HashMap<String, Entity>, prefix: &str) -> Fir
     FirstLightSet::new(name_map.get(prefix).copied(), left, right)
 }
 
+// 在场景实体的名称映射中查找单方队伍的三组灯光实体引用。
+// names 数组包含三个元素的名称前缀：[First, Second, Third]。
+// 如果 Second 或 Third 灯光实体缺失，则返回 None 并发出警告。
 fn find_team_lights(
     name_map: &HashMap<String, Entity>,
     team: Team,
@@ -1184,8 +1327,11 @@ fn find_team_lights(
     Some(TeamCoreLights::new(team, first, second, third))
 }
 
+// 检查第一组灯光的分段灯带是否完整，如果不完整则发出警告日志。
+// 当既没有分段灯带也没有整体式灯环时，或分段灯带部分缺失时发出警告。
 fn warn_incomplete_first_light_set(prefix: &str, lights: &FirstLightSet) {
     if !lights.has_segments() {
+        // 没有分段灯带，检查是否有整体式灯环
         if lights.whole.is_none() {
             warn!(
                 "TECH_CORE.glb is missing {prefix} and segmented {prefix}_{{L,R}}_1..{FIRST_LIGHT_SEGMENT_COUNT}"
@@ -1194,11 +1340,13 @@ fn warn_incomplete_first_light_set(prefix: &str, lights: &FirstLightSet) {
         return;
     }
 
+    // 有分段灯带，检查是否有缺失的段
     let missing = lights.missing_segments(prefix);
     if missing.is_empty() {
         return;
     }
 
+    // 限制显示前 6 个缺失项，避免日志过长
     let preview = missing
         .iter()
         .take(6)
@@ -1214,6 +1362,8 @@ fn warn_incomplete_first_light_set(prefix: &str, lights: &FirstLightSet) {
     warn!("TECH_CORE.glb has incomplete {prefix} segments; missing {preview}{suffix}");
 }
 
+// 科技核心场景初始化系统，在 GLTF 场景实例化完成后执行。
+// 搜索场景中按约定命名的灯光实体，绑定材质并创建 TechCore 组件。
 fn setup_tech_core(
     events: On<SceneInstanceReady>,
     mut commands: Commands,
@@ -1221,10 +1371,12 @@ fn setup_tech_core(
     roots: Query<(), With<TechCoreRoot>>,
     names: Query<&Name>,
 ) {
+    // 仅处理标记了 TechCoreRoot 的实体
     if !roots.contains(events.entity) {
         return;
     }
 
+    // 构建场景中所有实体的名称到实体句柄的映射，用于按名称查找灯光节点
     let name_map = scene_spawner
         .iter_instance_entities(events.instance_id)
         .filter_map(|entity| {
@@ -1235,6 +1387,7 @@ fn setup_tech_core(
         })
         .collect::<HashMap<_, _>>();
 
+    // 查找红蓝双方的灯光组 (First, Second, Third)
     let Some(red) = find_team_lights(&name_map, Team::Red, RED_LIGHT_NAMES) else {
         return;
     };
@@ -1242,25 +1395,31 @@ fn setup_tech_core(
         return;
     };
 
+    // 检查第一组灯光的分段是否完整，不完整时发出警告
     warn_incomplete_first_light_set(RED_LIGHT_NAMES[0], &red.first);
     warn_incomplete_first_light_set(BLUE_LIGHT_NAMES[0], &blue.first);
 
+    // 为根实体插入 TechCore 组件，启动灯光更新
     commands
         .entity(events.entity)
         .insert(TechCore::new(red, blue));
     info!("Tech core lights bound");
 }
 
+// 为指定实体及其所有后代递归设置材质句柄。
+// 先尝试设置根实体自身的材质，再遍历所有后代实体设置。
 fn assign_material(
     root: Entity,
     handle: Handle<StandardMaterial>,
     children: &Query<&Children>,
     mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
+    // 设置根实体自身的材质
     if let Ok(mut mesh_material) = mesh_materials.get_mut(root) {
         mesh_material.0 = handle.clone();
     }
 
+    // 遍历所有后代实体，为每个带有 MeshMaterial3d 的实体设置材质
     for child in children.iter_descendants(root) {
         if let Ok(mut mesh_material) = mesh_materials.get_mut(child) {
             mesh_material.0 = handle.clone();
@@ -1268,6 +1427,7 @@ fn assign_material(
     }
 }
 
+// 每帧更新科技核心灯光系统，根据当前阶段和已用时间更新灯光材质。
 fn update_tech_core_lights(
     time: Res<Time>,
     mut handles: Local<Option<TechCoreMaterialHandles>>,
@@ -1276,17 +1436,21 @@ fn update_tech_core_lights(
     mut mesh_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
     mut cores: Query<&mut TechCore>,
 ) {
+    // 首次运行时惰性初始化材质句柄缓存
     let handles = handles.get_or_insert_with(|| TechCoreMaterialHandles::new(&mut materials));
     let elapsed_secs = time.elapsed_secs_f64();
 
     for mut core in &mut cores {
+        // 获取阶段内已用时间，阶段切换时自动重置计时器
         let phase_elapsed_secs = core.render_elapsed_secs(elapsed_secs);
         let programs = core.phase.programs();
         let step5_lights = core.step5_lights();
+        // 分别更新红蓝双方的灯光组
         for team in core.teams() {
             for group in TechCoreLightGroup::ALL {
                 let program = programs[group.index()];
                 match group {
+                    // 第一组灯光：支持流水、组装等分段控制模式
                     TechCoreLightGroup::First => team.first.assign_program(
                         team.team,
                         program,
@@ -1296,10 +1460,12 @@ fn update_tech_core_lights(
                         &children,
                         &mut mesh_materials,
                     ),
+                    // 第二组灯光：整体式灯环，直接解析颜色并设置材质
                     TechCoreLightGroup::Second => {
                         let handle = handles.resolve(team.team, program, phase_elapsed_secs);
                         assign_material(team.second, handle, &children, &mut mesh_materials);
                     }
+                    // 第三组灯光：整体式灯环，与第二组逻辑相同
                     TechCoreLightGroup::Third => {
                         let handle = handles.resolve(team.team, program, phase_elapsed_secs);
                         assign_material(team.third, handle, &children, &mut mesh_materials);
@@ -1310,27 +1476,37 @@ fn update_tech_core_lights(
     }
 }
 
+// 调试用系统：按下 Shift+C 键切换科技核心到下一个阶段，用于测试各阶段的灯光效果。
 fn debug_cycle_tech_core_phase(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut cores: Query<&mut TechCore>,
 ) {
+    // 检测 Shift (左或右) + C 键组合
     if !(keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight))
         || !keyboard.just_pressed(KeyCode::KeyC)
     {
         return;
     }
 
+    // 将所有科技核心切换到下一个阶段
     for mut core in &mut cores {
         core.advance_debug();
         info!("Tech core phase: {:?}", core.phase());
     }
 }
 
+/// 科技核心插件，负责注册科技核心的初始化、灯光更新和调试系统。
+///
+/// 注册以下系统：
+/// - `setup_tech_core`: 场景加载完成后初始化科技核心组件，搜索灯光实体并绑定材质。
+/// - `update_tech_core_lights`: 每帧根据当前阶段和已用时间更新灯光材质。
+/// - `debug_cycle_tech_core_phase`: 调试用，按下 Shift+C 快捷键切换阶段，方便测试灯光效果。
 #[derive(Default)]
 pub(super) struct TechCorePlugin;
 
 impl Plugin for TechCorePlugin {
     fn build(&self, app: &mut App) {
+        // 添加场景加载观察者，在 GLTF 场景实例化完成后自动初始化科技核心
         app.add_observer(setup_tech_core).add_systems(
             Update,
             (debug_cycle_tech_core_phase, update_tech_core_lights),

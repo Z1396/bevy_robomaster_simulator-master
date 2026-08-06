@@ -206,6 +206,7 @@ impl ArmorConstructor<'_, '_> {
         self.mesh_assets.get(mesh_handle)
     }
 
+    // 处理装甲标记点：从网格中提取标记点坐标并插入 MarkerData 组件，隐藏标记点网格
     fn process_marker(
         &mut self,
         entity: Entity,
@@ -230,6 +231,7 @@ impl ArmorConstructor<'_, '_> {
         Some(MarkerData(vertices))
     }
 
+    // 从实体网格中提取顶点坐标列表
     fn extract_vertex(
         &mut self,
         entity: Entity,
@@ -252,6 +254,7 @@ impl ArmorConstructor<'_, '_> {
         Some(vertices)
     }
 
+    // 处理单个装甲根节点：添加碰撞体、配置灯光条、提取标记点和顶点、设置贴纸可见性
     fn process_armor_root(
         &mut self,
         root: Entity,
@@ -260,6 +263,7 @@ impl ArmorConstructor<'_, '_> {
     ) -> Option<ArmorRoot> {
         let query = HierarchyQuery::new(self.child_of, self.children, self.name);
         let root_query = query.of(root).flatten();
+        // 为 ARMOR 子物体添加三角网格碰撞体，合并重复顶点以优化碰撞检测
         {
             self.commands.entity(query!(root_query, .."ARMOR")?).insert(
                 ColliderConstructorHierarchy::new(ColliderConstructor::TrimeshFromMeshWithConfig(
@@ -267,6 +271,7 @@ impl ArmorConstructor<'_, '_> {
                 )),
             );
         }
+        // 为装甲根节点的所有子物体添加 Armor 组件，记录完整的装甲标识信息
         {
             let children = self.children;
 
@@ -283,6 +288,7 @@ impl ArmorConstructor<'_, '_> {
                     });
                 });
         }
+        // 根据队伍颜色选择对应的灯光条实体：红队用红色灯光，蓝队用蓝色灯光，另一组销毁
         //let _base = query!(root_query, .."BASE")?;
         let lights = [
             [query!(root_query, .."L_L")?, query!(root_query, .."L_R")?],
@@ -299,6 +305,7 @@ impl ArmorConstructor<'_, '_> {
             self.commands.entity(hide).despawn();
         }
 
+        // 为选中的灯光条添加 LightStrip 组件，标记左右侧
         self.commands
             .entity(lights[0])
             .insert(LightStrip { side: Side::Left });
@@ -306,9 +313,11 @@ impl ArmorConstructor<'_, '_> {
             .entity(lights[1])
             .insert(LightStrip { side: Side::Right });
 
+        // 处理装甲标记点（用于识别装甲位置和朝向）
         let marker = query!(root_query, .."MARKER", ...)?;
         self.process_marker(marker, &armor_name, armor_data)?;
 
+        // 提取左右两侧的顶点数据并插入 VertexData 组件，隐藏顶点网格
         let vertex = [
             (Side::Left, query!(root_query, .."VERTEX_L", ...)?),
             (Side::Right, query!(root_query, .."VERTEX_R", ...)?),
@@ -326,6 +335,7 @@ impl ArmorConstructor<'_, '_> {
             ));
             vertex
         });
+        // 处理贴纸：隐藏所有贴纸，仅显示与当前装甲标签匹配的贴纸
         {
             let c_query = query!(root_query, .."_C", ref).flatten();
             c_query.clone().any().into_iter().for_each(|e| {
@@ -346,6 +356,7 @@ impl ArmorConstructor<'_, '_> {
             }
         }
 
+        // 为装甲根实体添加 Armor 组件
         self.commands.entity(root).insert(Armor {
             name: armor_name.clone(),
             team: armor_data.team,
@@ -353,6 +364,7 @@ impl ArmorConstructor<'_, '_> {
             label: armor_data.spec.label(),
         });
 
+        // 生成全局唯一装甲 ID，并插入 ArmorRoot、ArmorParts、ArmorStickerSelection 组件
         static ID: AtomicUsize = AtomicUsize::new(0);
 
         let ar = ArmorRoot {
@@ -385,6 +397,7 @@ pub fn extract_vertices(mesh: &Mesh) -> Option<Vec<Vec3>> {
         .filter(|points: &Vec<Vec3>| !points.is_empty())
 }
 
+// 系统：检测新增的 ScanArmor 组件，为其下的所有 ARMOR_ROOT 子物体执行装甲构造流程
 fn insert(
     root: Query<(Entity, Read<ScanArmor>), Added<ScanArmor>>,
     mut constructor: ArmorConstructor,
@@ -406,6 +419,7 @@ fn insert(
     }
 }
 
+// 系统：当 ArmorStickerSelection 发生变化时，同步更新对应装甲的所有贴纸可见性
 fn sync_armor_stickers(
     mut commands: Commands,
     selections: Query<(Entity, &ArmorStickerSelection), Changed<ArmorStickerSelection>>,
@@ -427,10 +441,12 @@ fn sync_armor_stickers(
 }
 
 #[derive(Default)]
+/// 装甲构造插件，注册构造系统和贴纸同步系统
 pub(super) struct ArmorConstructorPlugin;
 
 impl Plugin for ArmorConstructorPlugin {
     fn build(&self, app: &mut App) {
+        // 注册 Update 阶段的装甲构造系统 insert 和贴纸同步系统 sync_armor_stickers
         app.add_systems(Update, (insert, sync_armor_stickers));
     }
 }
