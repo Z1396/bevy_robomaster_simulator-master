@@ -1,82 +1,103 @@
-# Bevy RoboMaster Simulator Configuration
-
+# ====================== 窗口渲染配置 ======================
 [window]
-# Rendering present mode. Use `auto_no_vsync` to exceed 60Hz for Talos/ROS2 capture.
-# Options: auto_vsync, auto_no_vsync, fifo, fifo_relaxed, mailbox, immediate
+# 渲染呈现模式，控制垂直同步与帧率上限
+# 可选值：auto_vsync(开启垂直同步锁显示器帧率)、auto_no_vsync(关闭VSync)、fifo、fifo_relaxed、mailbox、immediate
+# immediate：无阻塞提交画面，帧率拉满，auto-gen自动造数据集专用，尽可能提升采样速度
 present_mode = "immediate"
 
+# ====================== 调试模块开关 ======================
 [debug]
-# Turn these on only when needed; they noticeably reduce FPS.
+# 开启Egui可视化调试面板，开启后占用性能、帧率下降，auto-gen模式务必关闭
 egui = false
+# Bevy实体检视器，可以查看场景所有实体、组件，调试机甲结构时打开
 inspector = false
-# Prints FPS/frametime diagnostics to console.
+# 控制台打印帧率、单帧耗时、性能诊断信息，排查卡顿、帧率过低时开启
 diagnostics = true
 
+# ====================== 预览画面开关 ======================
 [preview]
-# On-screen preview camera. Disable to avoid rendering the scene twice (preview + capture).
+# 是否在窗口内渲染主视角预览画面
+# 关闭后只保留离屏采集渲染，不渲染窗口画面，进一步提升auto-gen采集速度
 enabled = true
 
+# ====================== 全局渲染画质配置 ======================
 [render]
-# Expensive on large scenes; disable for higher FPS.
+# 全局阴影开关，开启画质更真实，但GPU开销暴涨；生成数据集追求速度时建议关闭
 shadows = true
-# Main on-screen camera anti-aliasing.
+# 主预览相机FXAA抗锯齿，装甲边缘更顺滑，训练模型画面观感更好
 main_camera_fxaa = true
+# 环境光照照度，数值越大场景越亮；500.0 强光环境，用来生成强光下的装甲数据集
 illuminance = 500.0
+
+# ====================== RGB彩色画面采集配置（AutoGen数据集截图核心） ======================
 [capture.color]
-# RGB capture resolution for existing camera pipeline.
+# 自动采样保存的图片分辨率，YOLO训练集尺寸 1440×1080
 width = 1440
 height = 1080
 
+# ====================== 深度图采集配置（深度感知、点云、测距使用） ======================
 [capture.depth]
-# Depth capture resolution for livox-compatible point cloud output.
+# 深度图分辨率
 width = 1280
 height = 720
+# 深度相机近裁剪面，小于0.1m不会生成深度
 near = 0.1
+# 最大测距80米，符合比赛实战观测距离
 far = 80.0
 
+# ====================== Livox激光雷达模拟 + ROS话题发布 ======================
 [livox_ros]
-enabled = true
-frame_id = "camera_link"
-publish_freq = 10.0
-points_per_second = 400000
-line_num = 20
+enabled = true                  # 开启仿真Livox雷达，并通过ROS发点云话题
+frame_id = "camera_link"        # ROS TF坐标系名称
+publish_freq = 10.0           # 点云发布频率 10Hz
+points_per_second = 400000      # 每秒输出40万点云，仿真高密度Livox雷达
+line_num = 20                   # 20线激光雷达
 tag_default = 0
-intensity_default = 100.0
+intensity_default = 100.0       # 点云默认反射强度
 
+# ====================== 物理引擎配置 ======================
 [physics]
-substep_count = 20              # physics substeps per frame
+substep_count = 20
+# 每帧物理迭代子步数，数值越高碰撞、弹道物理越精准；20适合高速子弹碰撞，代价是CPU占用上升
 
+# ====================== 车辆运动参数（麦轮底盘+云台） ======================
 [vehicle]
-rotation_speed = 7.42            # rad/s - chassis rotation speed
-gimbal_rotation_speed = 3.0     # rad/s - gimbal rotation speed
-gimbal_pitch_limit = 0.785      # rad - gimbal pitch limit (~45 degrees)
-max_speed = 6.0                 # m/s - maximum vehicle speed
-linear_acceleration = 6.0       # m/s^2 - linear acceleration
-acceleration_exponent = 1.5    # exponent for non-linear acceleration curve
+rotation_speed = 7.42            # 车身原地旋转速度，单位 rad/s
+gimbal_rotation_speed = 3.0      # 云台水平旋转速度
+gimbal_pitch_limit = 0.785       # 云台俯仰限位，弧度 0.785 = 45°，云台最多抬头/低头45°
+max_speed = 6.0                  # 底盘最大行进速度 6m/s
+linear_acceleration = 6.0        # 底盘加速度 m/s²
+acceleration_exponent = 1.5      # 非线性加速曲线系数，数值越大起步越平缓，贴近实车手感
 
+# ====================== 麦轮底盘机械尺寸（麦轮运动学解算公式依赖） ======================
 [mecanum]
-wheel_radius_m = 0.076          # wheel radius (m)
-half_wheelbase_m = 0.18         # half of front-rear wheel spacing (m)
-half_trackwidth_m = 0.15        # half of left-right wheel spacing (m)
+wheel_radius_m = 0.076          # 驱动轮半径 76mm
+half_wheelbase_m = 0.18         # 前后轴距的一半
+half_trackwidth_m = 0.15        # 左右轮距的一半
+# 修改这三个尺寸，即可适配不同型号实体战车的麦轮运动特性
 
+# ====================== 弹丸弹道配置（发射机构物理） ======================
 [projectile]
-lifetime = 5.0                  # seconds - projectile lifetime
-speed = 25.0                    # m/s - initial speed
-cooldown = 0.05                  # seconds - fire cooldown
-diameter = 0.017                # meters - projectile diameter (17mm)
-mass = 0.0032                    # kg - projectile mass (17g)
-friction = 1.1                  # friction coefficient
-linear_damping = 0.0            # linear damping (set to 0 for physics-based drag below)
-uav_vel = 5.0
-uav_size = 0.5
-[projectile.aerodynamics]
-enabled = false                  # enable aerodynamic forces
-air_density = 1.225             # kg/m^3 - air density at sea level
-drag_coefficient = 0.22516         # Cd - smooth sphere drag coefficient
-wind = [0.0, 0.0, 0.0]          # m/s - wind velocity in world coordinates
+lifetime = 5.0                  # 子弹最长存活5秒，超时自动销毁
+speed = 25.0                    # 子弹初速度 25m/s
+cooldown = 0.05                 # 发射冷却0.05s，每秒最多发射20颗弹丸
+diameter = 0.017                 # 弹丸直径17mm，对应RM标准弹丸
+mass = 0.0032                   # 子弹质量3.2g
+friction = 1.1                  # 碰撞摩擦系数
+linear_damping = 0.0            # 速度阻尼置0，由下方空气动力学模块统一控制风阻
+uav_vel = 5.0                   # 无人机弹药飞行速度
+uav_size = 0.5                  # 无人机弹药体积
 
+# 子弹空气动力学、风阻模块
+[projectile.aerodynamics]
+enabled = false                  # 关闭空气阻力，子弹匀速直线飞行；开启后子弹会下坠、受风影响
+air_density = 1.225              # 海平面空气密度
+drag_coefficient = 0.22516        # 球形弹丸风阻系数
+wind = [0.0, 0.0, 0.0]           # 全局风速 [x,y,z]，非0时子弹会被风吹偏
+
+# ====================== 玩家视角相机参数 ======================
 [camera]
-fov = 45.0                      # degrees - field of view
-free_move_speed = 8.0           # m/s - free camera movement speed
-follow_offset = [0.0, 3.0, 2.0] # follow camera offset
-mouse_sensitivity = 0.003       # mouse look sensitivity
+fov = 45.0                      # 相机视场角45°，贴合工业摄像头视角
+free_move_speed = 8.0           # 自由漫游相机移动速度
+follow_offset = [0.0, 3.0, 2.0] # 跟随机甲时，相机在机甲后方上方的偏移坐标
+mouse_sensitivity = 0.003       # 鼠标镜头灵敏度

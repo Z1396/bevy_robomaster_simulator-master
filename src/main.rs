@@ -61,8 +61,23 @@ use crate::systems::{
 };
 
 /// 命令行入参结构体，#[derive(Parser)] 由clap自动实现解析逻辑
+/*
+#[derive(Parser)]
+clap 自动为 Args 实现 Parser trait，从而可以调用 Args::parse() 解析命令行。
+#[derive(Debug)]
+允许打印 Args 结构体调试查看参数。
+#[command(...)]
+配置程序的帮助信息、版本、作者，运行 ./程序 --help 就能自动生成帮助面板。 */
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+/*上方三行注释：文档注释，执行 --help 帮助命令时会展示这段说明。
+#[arg(long)]：过程宏注解，clap 的标记：
+long：代表长参数格式 --auto-gen；
+长参数规则：结构体字段名 auto_gen 自动对应命令行 --auto-gen，下划线 _ 自动转为横杠 -。
+    auto_gen: bool,
+字段类型是 bool 布尔值：
+命令行写了 --auto-gen → auto_gen = true；
+不写该参数 → auto_gen = false。布尔型参数不需要额外赋值，存在即真。 */
 struct Args {
     /// 启动参数：--auto-gen，开启全自动数据集生成模式
     #[arg(long)]
@@ -165,6 +180,9 @@ fn main() {
 
         App::new()
             .add_plugins((
+                /*DefaultPlugins：Bevy 基础全家桶（窗口、渲染、输入、事件、音频等）；
+                覆盖 WindowPlugin：使用上面解析好的垂直同步策略；fit_canvas_to_parent 窗口自适应布局；
+                .set(render_plugin_for_platform())：复用前面的平台渲染适配逻辑，WSL 环境自动切换兼容渲染方案，防止 WSL 黑屏崩溃； */
                 DefaultPlugins
                     .set(WindowPlugin {
                         primary_window: Some(Window {
@@ -175,14 +193,17 @@ fn main() {
                         ..default()
                     })
                     .set(render_plugin_for_platform()), // WSL渲染兼容
+                /*PhysicsPlugins::default()：载入 Avian3D 物理引擎，用来模拟机甲运动、碰撞。 */
                 PhysicsPlugins::default(), // 挂载Avian3D物理引擎
             ))
+            
             .add_plugins(RoboMasterPlugins)  // 机甲基础实体插件
             .add_plugins(ConfigPlugin)      // 加载全局配置
             .add_observer(setup_vehicle)    // 自动生成机甲载具
             .insert_resource(Gravity(Vec3::ZERO)) // 数据集生成阶段关闭重力，方便均匀采集各类姿态样本
             .insert_resource(SubstepCount(config.physics.substep_count)) // 物理子迭代次数，提升弹道精度
             .add_plugins(AutoGenPlugin) // 全自动数据集生成核心插件
+            /*启动数据集生成的 Bevy 游戏循环，阻塞运行，直到自动采集完成后 App 主动退出。 */
             .run();
         // 自动生成模式运行结束，直接return，不再执行下方完整交互仿真逻辑
         return;
@@ -193,6 +214,10 @@ fn main() {
     // 支持键鼠遥控、云台控制、射击、调试UI、截图、数据采集、ROS联动
     // ==============================================
     let config = SimulationConfig::default();
+    /*Rust 标准 Option 方法：
+    如果上一步结果是 Some(PresentMode)：直接取出里面的值赋值给 present_mode；
+    如果上一步是 None（解析失败）：执行闭包里面的逻辑，用闭包返回值当做最终结果。
+    和 unwrap_or 区别：unwrap_or 无论成功失败都会创建兜底值；unwrap_or_else 只有失败才执行闭包，性能更好。 */
     let present_mode = present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
         warn!(
             "Unknown window.present_mode {:?}, falling back to auto_no_vsync",

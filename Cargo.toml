@@ -1,48 +1,88 @@
+# ========== 【工作区配置 workspace】 ==========
+# 定义 Rust 工作区，用来统一管理多个子 crate，统一依赖版本、统一编译
 [workspace]
+# 工作区包含的成员包：
+# "." 代表当前根目录主包 daedalus
+# "crates/*" 自动包含 crates 文件夹下所有子 crate（talos-ipc、exact 等）
 members = [".", "crates/*"]
+# Cargo 解析依赖规则版本，resolver=2 是新版解析规则，解决依赖版本冲突问题
 resolver = "2"
 
+# 工作区公共依赖：所有成员 crate 都可以复用此处定义的依赖，统一版本避免冲突
 [workspace.dependencies]
+# Bevy 游戏引擎 0.18
+# dynamic_linking：动态链接Bevy，大幅缩短增量编译耗时；jpeg：支持JPG图片加载
 bevy = { version = "0.18", features = ["dynamic_linking", "jpeg"] }
+# Avian3D：Bevy 配套 3D 物理引擎，替代旧 Rapier，用于战车碰撞、子弹弹道物理模拟
 avian3d = "0.6"
+# Bevy + Egui 实体检视面板，调试场景实体、组件、资源用
 bevy-inspector-egui = "0.36"
+# memmap2：内存映射文件，用于高速读写配置、日志、IPC共享内存
 memmap2 = { version = "0" }
 
+# ========== 【当前根包 daedalus 基础信息】 ==========
 [package]
+# 主包名称
 name = "daedalus"
+# 版本号
 version = "0.1.0"
+# Rust 版本规范：edition 2024 最新语法
 edition = "2024"
+# cargo run 默认执行的二进制程序
 default-run = "daedalus"
 
+# ========== 【可选编译特性 Features 模块化编译】 ==========
+# 特性 = 可选依赖组合，按需编译，不需要的模块不参与编译，精简体积、加快编译速度
 [features]
+# ros2 特性：开启 ROS2 通信能力，依赖 r2r ROS 绑定库
 ros2 = ["dep:r2r"]
+# talos 特性：开启 Talos 上位机IPC通信（和你的电控、视觉上位机交互）
 talos = ["dep:talos-ipc"]
+# ffmpeg 特性：开启FFmpeg视频编码，用于录屏、数据集视频导出
 ffmpeg = ["dep:ffmpeg-next"]
+# 默认编译开启 talos 通信模块
 default = ["talos"]
 
+# ========== 主包所有依赖列表 ==========
 [dependencies]
+# 复用工作区统一版本的依赖
 bevy = { workspace = true }
 avian3d = { workspace = true }
 bevy-inspector-egui = { workspace = true }
-rand = "0"
+
+rand = "0"                     # 随机数库，用于随机光照、随机视角生成 auto-gen 数据集
+# ROS2 Rust绑定，optional=true 只有开启 ros2 feature 才会编译引入
 r2r = { version = "0", optional = true }
+# talos-ipc 本地私有子库，位于 crates/talos-ipc，仅 talos 特性启用
 talos-ipc = { path = "crates/talos-ipc", optional = true }
-crossbeam-channel = "0"
-image = "0"
-egui = "0"
-futures = "0"
+
+crossbeam-channel = "0"        # 跨线程无锁通道，配置热重载、IPC消息跨线程传递
+image = "0"                    # 图像解码，自动采集RGB截图保存图片
+egui = "0"                     # 界面UI底层库
+futures = "0"                  # 异步工具集，ROS、IPC异步通信使用
+# exact 本地私有工具库 crates/exact
 exact = { path = "crates/exact" }
-toml = "1"
-notify = "8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-clap = { version = "4.6", features = ["derive"] }
+
+toml = "1"                     # 解析 config.toml 配置文件
+notify = "8"                   # 文件监听，实现配置热重载
+serde = { version = "1", features = ["derive"] } # 序列化/反序列化，解析TOML、JSON配置
+serde_json = "1"               # JSON序列化输出
+clap = { version = "4.6", features = ["derive"] } # 命令行参数解析（--auto-gen、--ros2 启动参数）
+# FFmpeg Rust绑定，视频录制，仅 ffmpeg 特性开启
 ffmpeg-next = { version = "8.0.0", optional = true }
 
+# ========== 额外二进制程序（除了默认daedalus主程序之外的可执行文件） ==========
 [[bin]]
+# 二进制名称
 name = "talos_gimbal_mock_server"
+# 源码路径
 path = "src/bin/talos_gimbal_mock_server.rs"
+# 编译这个程序必须同时开启 talos + ffmpeg 两个特性
 required-features = ["talos", "ffmpeg"]
+# 作用：云台模拟服务，用来模拟真实电控云台，单独运行调试上位机通信
 
+# ========== Patch 补丁规则：替换crates.io上的包为本地修改版本 ==========
 [patch.crates-io]
+# 将线上的 r2r_msg_gen ROS消息生成库，替换成本地 third_party/r2r_msg_gen 自定义版本
+# 用途：修改ROS消息生成逻辑、自定义RM自定义消息类型，不用发布到官方crates.io
 r2r_msg_gen = { path = "third_party/r2r_msg_gen" }

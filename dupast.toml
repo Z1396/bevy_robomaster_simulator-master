@@ -1,79 +1,89 @@
-# dupast configuration file
-# Copy this to dupast.toml in your project root
+# dupast 配置文件模板
+# 使用方式：复制这份内容命名为 dupast.toml 放到项目根目录即可生效
 
-# Similarity threshold (0.0 - 1.0)
-# Pairs with similarity below this threshold will not be reported
-# Can be overridden with: -t <PERCENT> or DUPAST_THRESHOLD env var
+# ===================== 全局相似度阈值 =====================
+# 相似度阈值区间：0.0 ~ 1.0
+# 两段代码计算出来的相似度低于该数值，则判定为「不重复」，不会上报
+# 可通过命令行参数 -t 数值 / 环境变量 DUPAST_THRESHOLD 临时覆盖配置
 threshold = 0.20
 
-# Paths to scan when no CLI PATHS are provided
-# Supports files or directories, relative to current working directory
+# ===================== 默认扫描目录 =====================
+# 不手动在命令行传入扫描路径时，自动扫描此处配置的路径
+# 支持文件/文件夹，路径相对当前运行目录
 paths = ["src"]
 
-# Minimum tokens to consider as duplicate code block
-# Blocks (functions, statements) with fewer tokens than this will be ignored
-# Higher values reduce noise for very small functions
-# Can be overridden with: -L <N> or DUPAST_MIN_LINES env var
+# ===================== 判定重复的最小代码行数 =====================
+# 只有函数、代码块的 Token 行数 ≥ 该值，才会纳入重复检测
+# 数值调高可以过滤掉单行小片段、空行、简单if语句这类无效噪音
+# 命令行 -L 数值 / DUPAST_MIN_LINES 可覆盖
 min_block_lines = 3
 
-# Check intra-file duplication
-# When true, also detects duplicates within the same file
-# Can be overridden with: --no-intra-file flag
+# ===================== 是否检测同一个文件内部的重复代码 =====================
+# true：不仅检测不同文件之间重复，也查找单个文件里多处重复的代码片段
+# false：只检测跨文件重复
+# 可通过 --no-intra-file 关闭该功能
 check_intra_file = true
 
-# Output format
-# Options: "human", "json", "sarif"
-# Can be overridden with: -o <FORMAT> or DUPAST_OUTPUT_FORMAT env var
+# ===================== 输出格式 =====================
+# 可选三种格式：
+# human：人类可读彩色文本，控制台直接看
+# json：JSON结构化输出，方便脚本解析
+# sarif：通用静态分析标准格式，可导入VSCode、SonarQube等工具
+# 命令行 -o 格式名 / DUPAST_OUTPUT_FORMAT 可覆盖
 output_format = "human"
 
-# File extensions to scan
-# Add or remove extensions based on your project
+# ===================== 支持扫描的源码后缀 =====================
+# 只解析下述后缀的文件，其余文件直接跳过
 extensions = ["c", "cpp", "cc", "cxx", "hpp", "h", "hxx", "go", "java", "js", "mjs", "cjs", "php", "rs", "ts", "tsx"]
 
-# Maximum file size to process in bytes (default: 1MB)
-# Larger files are skipped to avoid memory issues
+# ===================== 单文件最大处理体积（单位字节） =====================
+# 超过1MB的文件直接跳过，防止超大文件解析AST占用过多内存导致程序崩溃
 max_file_size = 1_048_576
 
-# Number of parallel jobs (0 = CPU count)
-# Set to 1 to disable parallelism for debugging
-# Can be overridden with: -j <N> or DUPAST_JOBS env var
+# ===================== 并行线程数量 =====================
+# 0 = 自动读取CPU核心数创建对应线程并行扫描，速度最快
+# 设置为 1 关闭多线程，调试排查重复误报问题时使用
+# 命令行 -j 数量 / DUPAST_JOBS 可覆盖
 jobs = 0
 
-# Frequency penalty for token similarity (0.0 - 10.0)
-# Higher values penalize common tokens more heavily
-# 0.0 = no penalty (pure TF-IDF cosine similarity)
-# 1.0 = light penalty
-# 2.0 = moderate penalty (default) - good for general use
-# 5.0+ = strong penalty - only unique/rare tokens contribute to similarity
-# This helps distinguish structural similarity from common boilerplate code
-# Can be overridden with: -F <PENALTY> or DUPAST_FREQUENCY_PENALTY env var
+# ===================== 高频通用Token惩罚系数（核心防误报） =====================
+# 范围：0.0 ~ 10.0
+# 作用：对代码里随处可见的通用语法（if、for、return、int、void等烂大街关键字）施加权重惩罚
+# 避免出现「两个完全无关的for循环被误判为重复代码」
+# 0.0：无惩罚，纯粹TF-IDF余弦相似度匹配，容易误报
+# 1.0：轻微惩罚
+# 2.0：常规折中方案（官方默认）
+# 5.0及以上：强惩罚，只有独特业务逻辑代码才会参与相似度计算，过滤大量模板代码误匹配
+# 本配置设为 5.0，适合大型工程，避免把所有for/if都判定重复
+# 可通过 -F 数值 / DUPAST_FREQUENCY_PENALTY 覆盖
 frequency_penalty = 5.0
 
-# Enable fuzzy identifier matching using semantic vectors
-# When true, detects similarity even when identifiers are renamed
-# Example: calculateSum(a, b) ≈ computeSum(x, y) via semantic similarity
-# Uses a 13,000+ word thesaurus for synonym expansion
-# NOTE: Synonym graph (27KB) is only loaded when this is true
-# Can be overridden with: --fuzzy-identifiers flag or DUPAST_FUZZY_IDENTIFIERS env var
+# ===================== 模糊标识符匹配开关（高级特性） =====================
+# true：开启语义同义词匹配，变量名、函数名改名也能识别出代码重复
+# 示例：calculateSum(a,b) 和 computeSum(x,y) 变量名称完全不一样，但逻辑一致，依然判定重复
+# 原理：内置13000+英文同义词词库做向量语义匹配
+# 关闭后只会严格匹配标识符名称，改名后的重复代码会检测不出来
+# 开启时才会加载27KB同义词词库，不开不占用内存
+# 可通过 --fuzzy-identifiers 开关 / DUPAST_FUZZY_IDENTIFIERS 环境变量控制
 fuzzy_identifiers = true
 
-# Minimum similarity threshold for fuzzy identifier matching (0.0 - 1.0)
-# Only applies when fuzzy_identifiers = true
-# 0.5 = very permissive (many matches)
-# 0.6 = moderate (default) - balances recall and precision
-# 0.8 = strict (only very similar names)
-# Can be overridden with: --fuzzy-threshold <THRESHOLD> or DUPAST_FUZZY_THRESHOLD env var
+# ===================== 标识符模糊匹配的相似度阈值 =====================
+# 仅在 fuzzy_identifiers = true 时生效
+# 0.5：宽松模式，大量匹配，召回率高、误报多
+# 0.6：平衡模式，兼顾准确率与召回率（官方默认）
+# 0.8：严格模式，只有名称高度近似才判定为相似
+# 当前配置 0.2，极度宽松，哪怕函数名差别很大、逻辑一致也能识别重复
+# 命令行 --fuzzy-threshold 数值 / DUPAST_FUZZY_THRESHOLD 可覆盖
 fuzzy_identifier_threshold = 0.2
 
-# Color output model
-# Options: "auto", "always", "never"
-# auto: Use colors if output is a terminal (default)
-# always: Always use colors (even when piped)
-# never: Never use colors
-# Can be overridden with: --color <WHEN> or DUPAST_COLOR env var
+# ===================== 控制台彩色输出配置 =====================
+# 可选：auto / always / never
+# auto：终端环境输出彩色，管道重定向输出纯文本（默认）
+# always：无论是否管道，永远带颜色
+# never：全程无彩色
 # color = "auto"
 
-# Quiet mode (suppress non-error output)
-# When true, only shows warnings/errors, no summary or progress
-# Can be overridden with: -q / --quiet flag or DUPAST_QUIET env var
+# ===================== 安静模式 =====================
+# true：只打印错误、警告，屏蔽进度、统计汇总等正常输出
+# false：完整输出扫描进度、重复代码位置、统计结果
 # quiet = false

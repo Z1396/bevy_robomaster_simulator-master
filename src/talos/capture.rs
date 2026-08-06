@@ -1,16 +1,4 @@
-// ====================================================================
-// 模块名: talos::capture
-// 作用:   将 Bevy 渲染管线的图像与位姿数据采集并发布到 talos 共享内存
-// 职责:   1. 维护全局帧序号与时间戳（TalosFrameStamp）
-//         2. 在 ExtractSchedule 阶段从 MainApp 抽取位姿数据到 RenderApp
-//         3. 在渲染线程通过 GPU 捕获拿到 RGB 像素并发布到共享内存
-//         4. 在主线程发布位姿、底盘观测、运行时状态等
-// 说明:   关键点是图像捕获发生在 RenderApp 的 GPU 捕获回调中，而位姿
-//         等数据来自 MainApp。为保证时间戳与帧序号同步，二者必须共享
-//         同一份 ExtractedPoseData 快照，由 extract_pose_data 在
-//         ExtractSchedule 中写入。
-// ====================================================================
-
+// 导入采集驱动、相机捕获底层能力、共享内存发布器
 use crate::capture::{
     CameraFov, CaptureSource, ImageHandle, compute_camera_intrinsics,
     driver::{
@@ -19,74 +7,68 @@ use crate::capture::{
     },
     setup_capture_camera, setup_preview_window, sync_capture_camera,
 };
+// 战车业务组件
 use crate::components::{Controlled, InfantryGimbal, InfantryLaunchOffset, SubscribeAutoAim};
+// 数据集录制快照生成器（一边推talos实时流、一边保存数据集）
 use crate::dataset::prelude::DatasetSnapshotCreator;
+// 底盘观测帧资源、游戏系统执行阶段
 use crate::systems::{ChassisObservationFrame, GameplaySystems};
+// 坐标系转换工具：Bevy右手坐标系 → ROS标准坐标系
 use crate::talos::plugin::{to_ros_quat, to_ros_translation};
+
+// Bevy基础
 use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
 use bevy::render::{Extract, ExtractSchedule, RenderApp, RenderSystems};
+
 use std::f32::consts::PI;
+// 原子变量、跨线程锁、系统时间
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+// talos IPC共享内存库，负责共享内存读写
 use talos_ipc::*;
 
-/// 全局帧序号生成器，进程级单调递增
-///
-/// 使用 AtomicU64 保证线程安全，跨主线程与渲染线程共享。
+/// 全局单调帧序号，进程全局唯一，原子类型保证主线程/渲染线程并发安全
+/// 全程只会递增，永不回退，作为所有图像、位姿、观测数据的唯一时序ID
 static FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// 当前帧的序号与时间戳，作为 Bevy 资源在系统中传递
+/// 每一帧的时序标记资源，存在MainApp主线世界
+/// 每一帧开头统一更新，本帧所有图像、位姿共用同一套 frame_seq + timestamp，保障时序对齐
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct TalosFrameStamp {
-    /// 帧序号，由 FRAME_SEQ fetch_add 生成
-    pub frame_seq: u64,
-    /// 时间戳（纳秒，UNIX epoch）
-    pub timestamp_ns: u64,
+    pub frame_seq: u64,        // 全局递增帧编号
+    pub timestamp_ns: u64,     // UNIX时间戳(纳秒)
 }
 
-/// 推进帧戳到下一帧
-///
-/// 每帧调用一次，原子地递增全局帧序号并刷新时间戳。
-/// 该资源会被 ExtractSchedule 读取，进而传递给 RenderApp。
+/// 每帧开头执行：更新全局帧戳
 pub fn advance_talos_frame_stamp(mut stamp: ResMut<TalosFrameStamp>) {
+    // 原子自增，Relaxed内存序，仅保证自增原子性，性能更高
     stamp.frame_seq = FRAME_SEQ.fetch_add(1, Ordering::Relaxed);
     stamp.timestamp_ns = now_ns();
 }
 
-/// 从 MainApp 抽取到 RenderApp 的位姿数据快照
-///
-/// 用于在 GPU 捕获回调中拿到与图像同帧的位姿信息，保证时间戳一致。
+/// 【跨App同步核心快照】
+/// 在 ExtractSchedule 阶段，从MainApp拷贝至RenderApp渲染世界
+/// 渲染线程GPU捕获图像时，读取这份快照，保证「图像的帧号、时间戳 = 主线位姿的帧号、时间戳」
 #[derive(Resource, Clone, Default)]
 pub struct ExtractedPoseData {
-    /// 帧序号
     pub frame_seq: u64,
-    /// 时间戳（纳秒）
     pub timestamp_ns: u64,
-    /// 是否有效（相机/云台/枪口组件是否齐全）
-    pub valid: bool,
+    pub valid: bool,    // true=云台、相机、枪口实体全部存在，可以正常采集
 }
 
-/// 帧快照时刻捕获的位姿数据集合
-///
-/// 包含云台、枪口、相机相对云台的位姿，以及底盘观测，
-/// 在主线程组装后通过 publish_pose_data 一次性发布到共享内存。
+/// 主线组装完毕的完整位姿数据包，最终发布至共享内存
 #[derive(Clone)]
 struct CapturedPoseData {
-    /// 云台在 ROS 坐标系下的平移
-    gimbal_ros: [f32; 3],
-    /// 云台在 ROS 坐标系下的四元数 (w, x, y, z)
-    gimbal_quat: [f32; 4],
-    /// 枪口相对云台的平移（ROS 系）
-    muzzle_rel: [f32; 3],
-    /// 相机相对云台的平移（ROS 系）
-    camera_rel: [f32; 3],
-    /// 底盘观测快照
-    chassis_observation: ChassisObservation,
+    gimbal_ros: [f32; 3],        // 云台世界坐标（ROS坐标系xyz）
+    gimbal_quat: [f32; 4],       // 云台姿态四元数 wxyz (ROS标准顺序)
+    muzzle_rel: [f32; 3],        // 枪口相对于云台的局部偏移
+    camera_rel: [f32; 3],        // 采集相机相对于云台的局部偏移
+    chassis_observation: ChassisObservation, // 底盘运动观测（速度、加速度、陀螺仪、车轮转速等IMU级数据）
 }
 
-/// 获取当前 UNIX 纳秒时间戳
+/// 获取当前系统时间，单位：纳秒
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -94,25 +76,21 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
-/// 同步阶段快照：携带帧序号与时间戳，等待 GPU 捕获完成
+/// 同步阶段快照载体：渲染线程捕获图像前，先构建同步快照，绑定当前帧时序信息
+/// 实现 SnapshotSync trait，是GPU捕获生命周期的中间状态
 struct TalosSnapshotSync {
-    /// 帧序号
     frame_seq: u64,
-    /// 时间戳（纳秒）
     timestamp_ns: u64,
 }
 
 impl SnapshotSync for TalosSnapshotSync {
-    /// 当 GPU 捕获同步完成时调用，把快照转为异步等待状态
-    ///
-    /// 算法步骤:
-    ///   1. 从 DeferredWorld 取出 RenderApp 中共享的 publisher 上下文
-    ///   2. 构造 TalosSnapshot 等待图像像素就绪
+    /// GPU准备捕获画面完成后，转为异步等待状态，持有共享内存发布器上下文
     fn captured(
         self: Box<Self>,
         world: &mut DeferredWorld,
         _config: &CaptureConfig,
     ) -> Box<dyn SnapshotAsync> {
+        // 取出渲染App里存放的共享内存发布句柄
         let ctx = world.resource::<TalosCaptureContextShared>().0.clone();
 
         Box::new(TalosSnapshot {
@@ -123,28 +101,22 @@ impl SnapshotSync for TalosSnapshotSync {
     }
 }
 
-/// 异步快照：持有 publisher 与帧信息，等待 GPU 像素数据
+/// 异步快照：等待GPU完整读出RGB像素数据，拿到像素后写入共享内存
 struct TalosSnapshot {
-    /// 共享内存生产者
-    ctx: Arc<Mutex<ShmPublisher>>,
-    /// 帧序号
+    ctx: Arc<Mutex<ShmPublisher>>, // 共享内存发布器（多线程互斥锁保护）
     frame_seq: u64,
-    /// 时间戳（纳秒）
     timestamp_ns: u64,
 }
 
 impl SnapshotAsync for TalosSnapshot {
-    /// 当 GPU 捕获到完整像素数据时调用，将其发布到共享内存
-    ///
-    /// 算法步骤:
-    ///   1. 校验帧格式必须为 Rgb8
-    ///   2. 校验数据长度与分辨率匹配
-    ///   3. 加锁 publisher 并调用 publish_image
+    /// GPU回调：拿到渲染完毕的图像原始像素，校验合法性后写入共享内存
     fn captured(&mut self, frame: CapturedFrame<'_>) {
+        // 只处理RGB8格式图像，丢弃其他格式
         if frame.kind != CapturedFrameKind::Rgb8 {
             return;
         }
 
+        // 校验像素字节长度 = 宽×高×3通道(RGB)
         let expected_size = (frame.width * frame.height * 3) as usize;
         if frame.data.len() != expected_size {
             warn!(
@@ -155,36 +127,36 @@ impl SnapshotAsync for TalosSnapshot {
             return;
         }
 
+        // 分辨率强校验，避免分辨率变动导致外部算法解析错乱
         if frame.width != IMAGE_WIDTH || frame.height != IMAGE_HEIGHT {
             warn!(
-                "image reesolution mismatched: expected {}x{}, got {}x{}",
+                "image resolution mismatched: expected {}x{}, got {}x{}",
                 IMAGE_WIDTH, IMAGE_HEIGHT, frame.width, frame.height
             );
             return;
         }
 
+        // 上锁，将RGB图像二进制写入共享内存
         if let Ok(mut publisher) = self.ctx.lock() {
             publisher.publish_image(frame.data, self.frame_seq, self.timestamp_ns);
         }
     }
 }
 
-/// 快照创建器：决定是否为本帧生成 talos 快照
+/// GPU捕获回调生成器，每一帧渲染前判定：本帧是否需要采集图像快照
 #[derive(Default)]
 struct TalosSnapshotCreator {}
 
 impl GpuCaptureHandler for TalosSnapshotCreator {
-    /// 在每帧渲染前检查是否需要采集 talos 快照
-    ///
-    /// 时间戳、帧序号与位姿必须来自同一份 ExtractSchedule 快照，
-    /// 否则会出现图像与位姿时间戳不一致的问题。
     fn captured(&self, world: &World) -> Option<Box<dyn SnapshotSync>> {
+        // 读取渲染App内从主线拷贝过来的位姿快照
         let extracted = world.get_resource::<ExtractedPoseData>()?;
+        // 位姿组件缺失，放弃采集当前帧图像
         if !extracted.valid {
-            // 位姿数据无效时不生成快照
             return None;
         }
 
+        // 创建同步快照，绑定帧号时间戳，进入捕获生命周期
         Some(Box::new(TalosSnapshotSync {
             frame_seq: extracted.frame_seq,
             timestamp_ns: extracted.timestamp_ns,
@@ -192,42 +164,19 @@ impl GpuCaptureHandler for TalosSnapshotCreator {
     }
 }
 
-/// RenderApp 中共享的 publisher 上下文
-///
-/// 用于在渲染线程的 GPU 捕获回调中访问共享内存生产者。
+/// 注入到RenderApp渲染世界的共享内存上下文
+/// 渲染线程没有权限访问MainApp资源，因此提前克隆一份ShmPublisher放入RenderApp
 #[derive(Resource, Clone, Deref, DerefMut)]
 pub struct TalosCaptureContextShared(pub Arc<Mutex<ShmPublisher>>);
 
-/// 主线程的采集上下文资源
-///
-/// 持有 publisher 与视场角，供 publish_talos_pose_system 等系统使用。
+/// 主线程采集上下文资源，主线发布位姿、相机内参使用
 #[derive(Resource, Clone)]
 pub struct TalosCaptureContext {
-    /// 共享内存生产者
     pub publisher: Arc<Mutex<ShmPublisher>>,
-    /// 垂直视场角（弧度），用于计算相机内参
-    pub fov_y: f32,
+    pub fov_y: f32, // 相机垂直视场角，用于计算相机内参fx/fy/cx/cy
 }
 
-/// talos 图像与位姿采集插件
-///
-/// 内部注册 CameraCapturePlugin 处理 GPU 捕获，并设置相机内参、
-/// 注册渲染目标、配置 RenderApp 的位姿抽取系统。
-pub struct TalosCapturePlugin {
-    /// 采集配置（分辨率、纹理格式等）
-    pub config: CaptureConfig,
-    /// 采集上下文（publisher 与视场角）
-    pub context: TalosCaptureContext,
-}
-
-/// 主线程位姿发布系统
-///
-/// 算法步骤:
-///   1. 取出采集上下文，无则直接返回
-///   2. 单例查询相机、云台、枪口的 GlobalTransform/Transform
-///   3. 调用 captured_pose_data 组装位姿数据
-///   4. 加锁 publisher，调用 publish_pose_data 发布全部位姿
-///   5. 额外发布运行时状态（是否跟随）
+/// 主线系统：每一帧组装云台、枪口、相机、底盘观测数据，发布到位姿共享内存通道
 pub fn publish_talos_pose_system(
     context: Option<Res<TalosCaptureContext>>,
     frame_stamp: Res<TalosFrameStamp>,
@@ -240,10 +189,11 @@ pub fn publish_talos_pose_system(
     chassis_obs: Res<ChassisObservationFrame>,
     following: Res<SubscribeAutoAim>,
 ) {
+    // 未初始化采集上下文直接退出
     let Some(ctx) = context else {
         return;
     };
-    // 单例查询：相机、云台、枪口组件必须存在
+    // 任一核心实体缺失，跳过本帧位姿发布
     let Ok(cam_transform) = camera.single() else {
         return;
     };
@@ -254,7 +204,7 @@ pub fn publish_talos_pose_system(
         return;
     };
 
-    // 组装本帧位姿数据
+    // 把各个位姿转换为ROS坐标系格式
     let pose = captured_pose_data(
         cam_transform,
         gimbal_transform,
@@ -265,33 +215,32 @@ pub fn publish_talos_pose_system(
         frame_stamp.timestamp_ns,
     );
 
+    // 上锁发布所有位姿数据
     if let Ok(mut publisher) = ctx.publisher.lock() {
-        // 发布全部位姿通道
         publish_pose_data(
             &mut publisher,
             frame_stamp.frame_seq,
             frame_stamp.timestamp_ns,
             &pose,
         );
-        // 发布运行时状态：是否处于自瞄跟随
+        // 附加运行状态：当前是否开启自动瞄准
         publisher.publish_runtime_state(RuntimeState {
             timestamp_ns: frame_stamp.timestamp_ns,
             following: u8::from(following.load(Ordering::Acquire)),
-            _pad: [0; 55],
+            _pad: [0; 55], // 内存对齐占位
         });
     }
 }
 
+/// Talos采集主插件，整合相机捕获、跨App数据同步、相机初始化、时序系统调度
+pub struct TalosCapturePlugin {
+    pub config: CaptureConfig,    // 采集配置：分辨率、纹理格式、渲染目标
+    pub context: TalosCaptureContext,
+}
+
 impl Plugin for TalosCapturePlugin {
-    /// 构建采集插件
-    ///
-    /// 算法步骤:
-    ///   1. 创建 CameraCapturePlugin，挂载 TalosSnapshotCreator 与 Dataset 快照
-    ///   2. 加锁 publisher，根据视场角计算并写入相机内参
-    ///   3. 注册相机、预览窗口、同步系统等
-    ///   4. 在 RenderApp 注入共享上下文与 ExtractedPoseData，注册 extract_pose_data
     fn build(&self, app: &mut App) {
-        // 注册两个 GPU 捕获处理器：talos 与 dataset
+        // 挂载双捕获处理器：1.talos实时共享内存流  2.dataset数据集录制保存
         let (plugin, render_target_handle) = CameraCapturePlugin::new(
             app,
             self.config.clone(),
@@ -302,7 +251,8 @@ impl Plugin for TalosCapturePlugin {
         );
 
         {
-            // 计算相机内参并写入共享内存，C++ 端启动后读取
+            // 插件启动时，一次性计算相机内参fx/fy/cx/cy并写入共享内存
+            // C++算法进程启动时读取一次相机内参即可完成标定
             let mut publisher = self.context.publisher.lock().unwrap();
             let intrinsics = compute_camera_intrinsics(
                 self.config.width,
@@ -316,20 +266,22 @@ impl Plugin for TalosCapturePlugin {
                 fy: intrinsics.fy,
                 cx: intrinsics.cx,
                 cy: intrinsics.cy,
-                distortion: [0.0; 5],
+                distortion: [0.0; 5], // 仿真无畸变，畸变系数全部置0
                 width: intrinsics.width,
                 height: intrinsics.height,
                 _pad: [0; 24],
             });
         }
 
+        // 安装底层相机捕获插件，注入全局资源
         app.add_plugins(plugin)
             .insert_resource(ImageHandle(render_target_handle))
             .insert_resource(CameraFov(self.context.fov_y))
             .insert_resource(self.context.clone())
+            // 启动阶段：生成专用采集相机、预览窗口
             .add_systems(Startup, setup_capture_camera)
             .add_systems(Startup, setup_preview_window)
-            // 同步相机在玩法相机系统之后、渲染之前
+            // 每一帧更新采集相机姿态，跟随云台视角；时序约束：玩法相机更新完成后、正式渲染前同步
             .add_systems(
                 Update,
                 sync_capture_camera
@@ -337,19 +289,20 @@ impl Plugin for TalosCapturePlugin {
                     .before(RenderSystems::Render),
             );
 
-        // 在 RenderApp 注入共享资源并注册位姿抽取系统
+        // ========== 关键：向渲染子App注入资源，注册抽取系统 ==========
         app.sub_app_mut(RenderApp)
             .insert_resource(TalosCaptureContextShared(self.context.publisher.clone()))
             .insert_resource(self.context.clone())
             .insert_resource(ExtractedPoseData::default())
+            // ExtractSchedule 是Bevy专门用于「主线数据拷贝至渲染线程」的阶段
+            // 每一帧渲染前自动执行 extract_pose_data，把主线位姿快照同步进RenderApp
             .add_systems(ExtractSchedule, extract_pose_data);
     }
 }
 
-/// Extract pose data from MainApp to RenderApp
-/// 在 ExtractSchedule 阶段把主世界的位姿与帧戳抽取到 RenderApp
-///
-/// 这样 GPU 捕获回调拿到的位姿与图像严格同帧，避免时间戳漂移。
+/// ExtractSchedule 专属系统
+/// 从MainApp主线世界抽取帧号、时间戳、相机/云台/枪口存在性标记，存入RenderApp的ExtractedPoseData
+/// 实现「渲染线程拿到的图像，和主线发布的位姿严格属于同一帧时序」
 fn extract_pose_data(
     mut pose_data: ResMut<ExtractedPoseData>,
     frame_stamp: Extract<Res<TalosFrameStamp>>,
@@ -360,10 +313,11 @@ fn extract_pose_data(
     >,
     chassis_obs: Extract<Res<ChassisObservationFrame>>,
 ) {
+    // 拷贝本帧时序信息
     pose_data.frame_seq = frame_stamp.frame_seq;
     pose_data.timestamp_ns = frame_stamp.timestamp_ns;
 
-    // 任一单例查询失败都标记为无效，跳过本帧图像发布
+    // 校验三大核心实体是否存在，任意缺失标记本帧无效
     let Ok(cam_transform) = camera.single() else {
         pose_data.valid = false;
         return;
@@ -377,7 +331,7 @@ fn extract_pose_data(
         return;
     };
 
-    // 此处调用 captured_pose_data 仅为校验组件齐全，结果暂不使用
+    // 校验通过，标记快照有效，渲染线程可以捕获图像
     let _pose = captured_pose_data(
         cam_transform,
         gimbal_transform,
@@ -390,24 +344,7 @@ fn extract_pose_data(
     pose_data.valid = true;
 }
 
-/// 组装本帧的位姿数据
-///
-/// 算法步骤:
-///   1. 计算相机相对云台、枪口相对云台的局部变换
-///   2. 云台旋转叠加枪口局部旋转与一个固定的 ZYX 偏航补偿（PI/2）
-///   3. 全部通过 to_ros_translation / to_ros_quat 转到 ROS 坐标系
-///   4. 填充 ChassisObservation 字段（速度、加速度、IMU 等）
-///
-/// 参数:
-///   - cam_transform: 相机全局变换
-///   - gimbal_transform: 云台全局变换
-///   - muzzle_global: 枪口全局变换
-///   - muzzle_local: 枪口局部变换
-///   - chassis_obs: 底盘观测资源
-///   - frame_seq: 帧序号
-///   - timestamp_ns: 时间戳（纳秒）
-///
-/// 返回: 组装好的 CapturedPoseData
+/// 坐标转换组装函数：Bevy世界坐标系 → ROS坐标系，打包完整位姿结构体
 fn captured_pose_data(
     cam_transform: &GlobalTransform,
     gimbal_transform: &GlobalTransform,
@@ -417,16 +354,16 @@ fn captured_pose_data(
     frame_seq: u64,
     timestamp_ns: u64,
 ) -> CapturedPoseData {
-    // 计算相机/枪口相对云台的局部平移
+    // reparented_to：计算子物体相对于父物体的局部位姿
     let cam_rel = cam_transform.reparented_to(gimbal_transform);
     let muzzle_rel = muzzle_global.reparented_to(gimbal_transform);
 
-    // 云台旋转 = 云台自身旋转 * 枪口局部旋转 * 固定 ZYX 偏航补偿
+    // 云台姿态叠加枪口旋转 + 90°欧拉补偿，对齐ROS朝向惯例
     let gimbal_rot = gimbal_transform.rotation()
         * muzzle_local.rotation
         * Quat::from_euler(EulerRot::ZYX, 0.0, 0.0, PI / 2.0);
 
-    // 全部转到 ROS 坐标系
+    // 全部转为ROS右手坐标系格式
     let gimbal_ros = to_ros_translation(gimbal_transform.translation());
     let gimbal_rot = to_ros_quat(gimbal_rot);
     let muzzle = to_ros_translation(muzzle_rel.translation);
@@ -434,10 +371,10 @@ fn captured_pose_data(
 
     CapturedPoseData {
         gimbal_ros: [gimbal_ros.x, gimbal_ros.y, gimbal_ros.z],
-        // 四元数顺序为 (w, x, y, z)
         gimbal_quat: [gimbal_rot.w, gimbal_rot.x, gimbal_rot.y, gimbal_rot.z],
         muzzle_rel: [muzzle.x, muzzle.y, muzzle.z],
         camera_rel: [camera.x, camera.y, camera.z],
+        // 灌入底盘运动观测全量数据
         chassis_observation: ChassisObservation {
             frame_seq,
             timestamp_ns,
@@ -468,22 +405,14 @@ fn captured_pose_data(
     }
 }
 
-/// 一次性发布所有位姿通道与底盘观测
-///
-/// 算法步骤:
-///   1. 发布 Odom 位姿（云台在里程计系的位置，四元数置为单位）
-///   2. 发布 Gimbal 位姿（云台旋转，平移置零）
-///   3. 发布 Muzzle 位姿（枪口相对云台平移）
-///   4. 发布 Camera 位姿（相机相对云台平移）
-///   5. 发布 ChassisObservation 结构体
-///   6. 兼容旧通道：通过 publish_pose_with_aux 把底盘观测摘要塞进 PoseIndex::ChassisObservation
+/// 统一发布多路位姿话题至共享内存，分通道隔离数据，外部算法按需订阅
 fn publish_pose_data(
     publisher: &mut ShmPublisher,
     frame_seq: u64,
     timestamp_ns: u64,
     pose: &CapturedPoseData,
 ) {
-    // 1. 里程计位姿：仅平移，旋转为单位四元数
+    // 通道1：Odom里程计位姿，只发布云台世界坐标，旋转置单位四元数
     publisher.publish_pose(
         PoseIndex::Odom,
         pose.gimbal_ros,
@@ -492,7 +421,7 @@ fn publish_pose_data(
         timestamp_ns,
     );
 
-    // 2. 云台位姿：仅旋转，平移置零
+    // 通道2：Gimbal云台姿态，平移置0，只发布旋转四元数
     publisher.publish_pose(
         PoseIndex::Gimbal,
         [0.0, 0.0, 0.0],
@@ -501,7 +430,7 @@ fn publish_pose_data(
         timestamp_ns,
     );
 
-    // 3. 枪口位姿：相对云台的平移
+    // 通道3：枪口相对云台偏移
     publisher.publish_pose(
         PoseIndex::Muzzle,
         pose.muzzle_rel,
@@ -510,7 +439,7 @@ fn publish_pose_data(
         timestamp_ns,
     );
 
-    // 4. 相机位姿：相对云台的平移
+    // 通道4：采集相机相对云台偏移
     publisher.publish_pose(
         PoseIndex::Camera,
         pose.camera_rel,
@@ -519,14 +448,13 @@ fn publish_pose_data(
         timestamp_ns,
     );
 
-    // 5. 发布完整的底盘观测结构体
+    // 通道5：完整底盘观测结构体（速度、加速度、陀螺仪、车轮转速）
     let mut observation = pose.chassis_observation;
     observation.frame_seq = frame_seq;
     observation.timestamp_ns = timestamp_ns;
     publisher.publish_chassis_observation(observation);
 
-    // Legacy compatibility path for consumers still reading pose slot 4.
-    // 6. 旧版兼容通道：把底盘观测摘要塞进 PoseIndex::ChassisObservation 的 aux 字段
+    // 兼容旧版算法程序：将底盘运动摘要塞进 ChassisObservation 预留Aux字段
     publisher.publish_pose_with_aux(
         PoseIndex::ChassisObservation,
         [
