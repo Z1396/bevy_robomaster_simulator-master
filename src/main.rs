@@ -199,16 +199,24 @@ fn should_enable_talos_plugin(app: &App) -> bool {
 }
 
 fn main() {
-    // 解析控制台传入的命令行参数
+    /*- Args 是前面定义的结构体（带 #[derive(Parser)] ），clap 自动实现解析。
+    - 这一句把命令行参数（比如 --auto-gen ）解析成 args 结构体。
+    - 如果写了 --auto-gen ， args.auto_gen == true ；没写就是 false 。 */
     let args = Args::parse();
 
     // ==============================================
     // 分支一：带 --auto-gen 参数，进入【纯数据集自动生成模式】
     // 精简App，移除UI、调试面板、人机控制逻辑，最大化性能批量生成数据集
+    /*SimulationConfig::default() 用代码内置默认值生成一份配置（ 不是读 config.toml ，因为这个模式下不需要热重载）。 */
     // ==============================================
     if args.auto_gen {
         let config = SimulationConfig::default();
         // 解析垂直同步配置，非法值兜底关闭垂直同步
+        /*- 调用辅助函数 present_mode_from_config ，把字符串（如 "immediate" ）转成 Bevy 的 PresentMode 枚举。
+        - 返回 Option<PresentMode> ，匹配成功就是 Some(...) ，配置非法就是 None 。
+        - unwrap_or_else ：成功就取里面的值；失败时执行闭包（打印警告 + 兜底用 AutoNoVsync 关闭垂直同步）。 
+        present_mode_from_config 内部逻辑 （前面 136-146 行）：就是一个 match ，
+        把 "vsync" / "immediate" / "fifo" 等字符串映射到对应的 PresentMode 枚举值，非法值返回 None 。 */
         let present_mode =
             present_mode_from_config(&config.window.present_mode).unwrap_or_else(|| {
                 warn!(
