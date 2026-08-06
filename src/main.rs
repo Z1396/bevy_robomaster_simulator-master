@@ -17,6 +17,11 @@ mod telemetry;      // 遥测数据上报模块
 mod util;           // 通用工具函数库（坐标转换、Transform拷贝、数学工具等）
 
 // 条件编译：仅编译时开启 ros2 特性，才编译 ros2 对接代码，避免无依赖时编译报错
+/*1. #[cfg(...)]
+属性宏，全称 configure /conditional compile（条件编译）
+被它包裹的代码、模块、use、函数、impl，只有括号内条件成立，才会参与编译；条件不成立时，代码直接被丢弃，完全不编译、不进最终二进制。
+2. feature = "ros2"
+条件：只有在编译项目时，开启名为 ros2 的特性 (feature)，条件才为 true。 */
 #[cfg(feature = "ros2")]
 mod ros2;
 // 条件编译：开启 talos 采集特性才编译 Talos 高精度采集插件
@@ -44,20 +49,55 @@ use clap::Parser;
 use std::sync::atomic::AtomicBool;
 
 // ====================== 导入本地各个子模块对外暴露的插件、类型 ======================
+// 引入自动数据集生成插件：用来全自动对局、自动截图采集装甲数据集（YOLO训练素材）
 use crate::auto_gen::AutoGenPlugin;
-use crate::components::{CameraMode, FollowingType, ProjectileCooldown, SubscribeAutoAim};
-use crate::config::{ConfigPlugin, SimulationConfig};
-use crate::dataset::prelude::DatasetPlugin;
-use crate::handler::{on_activate, on_hit};
-use crate::robomaster::prelude::RoboMasterPlugins;
-use crate::setup::{setup, setup_collision, setup_ground, setup_vehicle};
-use crate::statistic::ProjectileStatistics;
+
+// 游戏内自定义组件（ECS组件，挂载在实体Entity上）
+use crate::components::{
+    CameraMode,                // 相机模式枚举：自由视角/跟随车辆/跟随云台
+    FollowingType,             // 跟随模式类型：跟随底盘、跟随云台、跟随发射弹丸
+    ProjectileCooldown,        // 弹丸发射冷却组件：记录发射CD时间，防止连发违规
+    SubscribeAutoAim,          // 自动瞄准订阅标记组件：挂载后实体开启自动瞄准逻辑
+};
+
+use crate::config::{ConfigPlugin, SimulationConfig};// 全局配置插件 + 仿真配置结构体
+use crate::dataset::prelude::DatasetPlugin;// 数据集模块完整导入：负责采集对局画面、装甲标签、坐标，输出标准数据集格式
+use crate::handler::{on_activate, on_hit};// 事件回调处理器：碰撞激活、命中判定逻辑
+use crate::robomaster::prelude::RoboMasterPlugins;// RM机器人整套功能插件合集（底盘、云台、装甲、电机物理、装甲血量、击打判定全部封装在内）
+use crate::setup::{         // 世界初始化函数：场景、地面、车辆实体、碰撞体初始化
+    setup,                 // 全局总初始化函数
+    setup_collision,       // 初始化碰撞层、碰撞过滤规则（装甲、弹丸、地面碰撞规则）
+    setup_ground,          // 生成仿真场地地面、边界围栏
+    setup_vehicle,         // 生成RM战车实体，挂载底盘、云台、装甲组件
+};
+use crate::statistic::ProjectileStatistics;// 弹丸命中统计组件，记录发射次数、命中装甲、命中率等对战数据
+// 业务系统集合（Bevy System，每一帧自动运行的逻辑函数）
 use crate::systems::{
-    ChassisObservationFrame, GameplaySystems, PreviousKinematicState, auto_aim_switch,
-    change_appearance, cleanup_projectiles, following_controls, freecam_controls, gimbal_controls,
-    projectile_aerodynamics, projectile_launch, remote_gimbal_controls, remote_vehicle_controls,
-    screenshot_on_f2, screenshot_saving, setup_projectile, switch_slapper_control, uav_launch,
-    update_chassis_observation, update_help_text, vehicle_controls,
+    // 观测系统：为强化学习/感知模块输出底盘状态观测帧数据
+    ChassisObservationFrame,
+    // 游戏主逻辑系统组，统一管理对局生命周期
+    GameplaySystems,
+    // 存储上一帧刚体运动状态，用于差分计算、速度求解、平滑滤波
+    PreviousKinematicState,
+
+    auto_aim_switch,                // 自动瞄准开关逻辑，控制开启/关闭自瞄
+    change_appearance,              // 更换战车皮肤、装甲颜色、阵营外观
+    cleanup_projectiles,            // 清理过期弹丸（飞出场地/命中后销毁子弹，避免内存堆积）
+    following_controls,             // 跟随相机控制逻辑
+    freecam_controls,               // 自由视角键鼠控制
+    gimbal_controls,                // 本地操控云台俯仰、旋转
+    projectile_aerodynamics,        // 弹丸空气阻力物理仿真，复刻真实子弹下坠、飞行轨迹
+    projectile_launch,              // 发射弹丸主逻辑，检测冷却、生成子弹实体
+    remote_gimbal_controls,         // 远程客户端操控云台（局域网多机操控）
+    remote_vehicle_controls,        // 远程操控底盘移动
+    screenshot_on_f2,               // F2快捷键手动截图
+    screenshot_saving,              // 截图落地保存逻辑，配合数据集模块打标签
+    setup_projectile,               // 子弹实体初始化，挂载刚体、碰撞、冷却组件
+    switch_slapper_control,         // 哨兵/飞镖机构控制切换
+    uav_launch,                     // 无人机投放系统（RM无人机投掷弹丸逻辑）
+    update_chassis_observation,     // 刷新底盘观测数据供给AI感知
+    update_help_text,               // 更新界面左下角帮助提示文字
+    vehicle_controls,               // 本地键盘操控底盘前进后退转向
 };
 
 /// 命令行入参结构体，#[derive(Parser)] 由clap自动实现解析逻辑
@@ -392,3 +432,35 @@ fn main() {
     // 启动Bevy主游戏循环，阻塞运行
     app.run();
 }
+
+/*main() 启动
+   │
+   ├─ ① Args::parse() 解析命令行
+   │
+   ├─ ② 判断 --auto-gen？
+   │     ├─ 是 → 走【数据集自动生成模式】(精简 App) → run() → 退出
+   │     └─ 否 → 走【完整交互仿真模式】(完整 App) → run()
+   │
+   └─ ③ 完整模式的 App 内部运行时序（run() 接管后）
+         │
+         ├─ Startup 阶段（只跑一次）
+         │     setup()              生成地面、灯光、相机、UI
+         │     setup_projectile()   初始化弹丸资源池
+         │
+         ├─ 观察者事件（被动触发）
+         │     setup_ground / setup_vehicle / setup_collision / on_hit / on_activate
+         │
+         └─ 主循环（每帧重复）
+              │
+              ├─ Update 阶段（按 SystemSet 链式顺序）
+              │     Input    输入采集 → GameLogic 业务 → Camera 相机 → Cleanup 清理
+              │
+              ├─ PostUpdate 阶段
+              │     TransformSystems::Propagate  (Bevy 自带，传播坐标)
+              │     update_chassis_observation   (算底盘观测)
+              │     projectile_launch / uav_launch (发射子弹)
+              │
+              ├─ FixedUpdate 阶段（固定步长）
+              │     projectile_aerodynamics (弹道物理)
+              │
+              └─ Render 阶段（渲染出图） */
