@@ -1,9 +1,9 @@
-// ====================================================================
-// 模块名：power_rune::visual
-// 作用：能量机关的视觉表现控制
-// 职责：根据当前机关模式与各目标激活状态，将外观切换指令下发到
-//       StatefulAppearance，驱动场景中材质/可见性的同步刷新
-// ====================================================================
+//! 能量机关的视觉表现控制。
+//!
+//! 定义了 `RuneVisual`（单个目标面的视觉控制器集合）和
+//! `PowerRuneVisuals`（机关整体视觉组件）两个核心类型。
+//! 根据机关模式与各目标激活状态，将外观切换指令下发到 `StatefulAppearance`，
+//! 驱动场景中材质/可见性的同步刷新。
 
 use crate::all_arg_constructor;
 use crate::robomaster::power_rune::common::{RUNE_TARGET_COUNT, RuneMode};
@@ -13,7 +13,7 @@ use bevy::prelude::Component;
 
 // RuneVisual：单个目标面的视觉控制器集合，聚合了目标本体、装饰段、进度段等多组外观开关。
 // 每组 Controller 负责在给定激活状态下切换对应场景实体的可见性/材质。
-// 字段说明：
+// all_arg_constructor! 宏不支持 doc 注释，故在此说明字段含义：
 //   target           - 目标本体外观控制器（目标面本身的高亮/熄灭切换）
 //   legging_segments - 三段装饰条外观控制器（机关花瓣上的装饰亮带）
 //   padding_segments - 边缘填充段外观控制器
@@ -36,7 +36,7 @@ impl RuneVisual {
     /// - `appearance`：可变外观上下文，用于累积应用切换指令
     ///
     /// # 算法步骤
-    /// 1. 小机关：目标本体与全部装饰段统一按 activation 切换
+    /// 1. 小机关：目标本体与全部装饰段统一按 `activation` 切换
     /// 2. 大机关：已激活时目标面反转为熄灭（仅装饰段点亮），
     ///    非已激活时全部装饰段同步；已激活状态仅点亮首段装饰
     /// 3. 最后统一切换填充段与进度段
@@ -84,9 +84,9 @@ impl RuneVisual {
 /// 能量机关整体视觉组件，包含根外观控制器与若干目标面视觉。
 #[derive(Component)]
 pub struct PowerRuneVisuals {
-    /// 根节点外观控制器（控制机关整体框架的点亮状态）
+    /// 根节点外观控制器（控制机关整体框架的点亮状态）。
     root: Controller,
-    /// 5 个目标面的视觉控制器数组
+    /// 5 个目标面的视觉控制器数组。
     targets: [RuneVisual; RUNE_TARGET_COUNT],
 }
 
@@ -99,7 +99,7 @@ impl PowerRuneVisuals {
     /// 根据机关模式与当前机制状态，刷新整体视觉。
     ///
     /// # 参数
-    /// - `mode`：机关模式，传递给各目标面的 apply
+    /// - `mode`：机关模式，传递给各目标面的 `apply`
     /// - `state`：当前机制状态机，提供根激活态与各目标激活态
     /// - `appearance`：可变外观上下文
     ///
@@ -112,7 +112,9 @@ impl PowerRuneVisuals {
         state: &MechanismState,
         appearance: &mut StatefulAppearance,
     ) {
+        // 设置根节点外观
         self.root.set(state.root_activation(), appearance);
+        // 逐个设置目标面外观
         for (target, activation) in self.targets.iter_mut().zip(state.target_states()) {
             target.apply(mode, activation, appearance);
         }
