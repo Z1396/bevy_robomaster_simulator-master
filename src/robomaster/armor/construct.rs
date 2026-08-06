@@ -1,3 +1,11 @@
+//! 装甲构造模块
+//!
+//! 负责从 3D 模型网格中自动构建装甲实体，包括：
+//! - 提取装甲标记点 (marker) 和顶点数据 (vertex)
+//! - 根据队伍颜色配置灯光条 (light strip)
+//! - 管理贴纸 (sticker) 的可见性
+//! - 为装甲子物体添加碰撞体
+
 use crate::query;
 use crate::robomaster::prelude::{ArmorLabel, ArmorSpec, MarkerData, Team, extract_markers};
 use crate::util::entity_query::HierarchyQuery;
@@ -13,49 +21,74 @@ use bevy::prelude::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Component, Debug)]
+/// 标记组件：标记待扫描构建的装甲根实体，携带队伍和规格信息
 pub struct ScanArmor {
+    /// 队伍标识（红方/蓝方）
     pub team: Team,
+    /// 装甲规格（小装甲/大装甲 + 标签）
     pub spec: ArmorSpec,
 }
 
 impl ScanArmor {
+    /// 创建新的装甲扫描标记
+    ///
+    /// # 参数
+    /// - `team`: 队伍标识
+    /// - `spec`: 装甲规格
     pub const fn new(team: Team, spec: ArmorSpec) -> Self {
         Self { team, spec }
     }
 }
 
 #[derive(Component, Clone, Debug)]
+/// 装甲顶点数据组件，存储从装甲模型提取的碰撞体顶点集合
 pub struct VertexData {
+    /// 顶点所属侧边（左侧/右侧）
     pub side: Side,
+    /// 顶点坐标列表
     pub points: Vec<Vec3>,
 }
 
 #[derive(Component, Clone, Debug)]
+/// 装甲灯光条组件，标记装甲上的 LED 灯带实体并记录其所在侧
 pub struct LightStrip {
+    /// 灯光条所在侧边（左侧/右侧）
     pub side: Side,
 }
 
 #[derive(Component, Clone, Debug)]
+/// 装甲核心组件，附加到装甲的每个子物体上，携带完整的装甲标识信息
 pub struct Armor {
+    /// 装甲名称
     pub name: String,
+    /// 队伍标识（红方/蓝方）
     pub team: Team,
+    /// 装甲规格（小装甲/大装甲 + 标签）
     pub spec: ArmorSpec,
+    /// 装甲标签
     pub label: ArmorLabel,
 }
 
 #[derive(Component, Clone, Copy, Debug)]
+/// 贴纸组件，标记装甲上的贴纸实体，记录其所属根实体和标签
 pub struct ArmorSticker {
+    /// 所属装甲根实体
     pub root: Entity,
+    /// 贴纸的装甲标签
     pub label: ArmorLabel,
 }
 
 #[derive(Component, Clone, Debug)]
+/// 贴纸选择组件，用于在调试中切换当前显示的贴纸
 pub struct ArmorStickerSelection {
+    /// 当前选中的贴纸标签
     pub label: ArmorLabel,
+    /// 在 sequence_small() 序列中的索引
     pub sequence_index: usize,
 }
 
 impl ArmorStickerSelection {
+    /// 创建新的贴纸选择器，根据标签初始化其在序列中的索引
     pub fn new(label: ArmorLabel) -> Self {
         Self {
             label,
@@ -63,6 +96,10 @@ impl ArmorStickerSelection {
         }
     }
 
+    /// 切换到序列中的下一个贴纸标签（循环），用于调试时切换装甲贴纸
+    ///
+    /// # 返回值
+    /// 切换后的新 ArmorLabel
     pub fn advance_debug_sequence(&mut self) -> ArmorLabel {
         let sequence = ArmorLabel::sequence_small();
         self.sequence_index += 1;
@@ -73,12 +110,16 @@ impl ArmorStickerSelection {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+/// 装甲侧边枚举，标识装甲的左侧或右侧
 pub enum Side {
+    /// 左侧
     Left,
+    /// 右侧
     Right,
 }
 
 impl Side {
+    /// 将侧边转换为数组索引（Left=0, Right=1）
     pub const fn index(self) -> usize {
         match self {
             Self::Left => 0,
@@ -88,36 +129,52 @@ impl Side {
 }
 
 #[derive(SystemParam)]
+/// 装甲构造器系统参数，封装了构造装甲所需的全部 ECS 查询和资源
 pub struct ArmorConstructor<'w, 's> {
+    /// ECS 指令队列，用于增删组件、生成/销毁实体
     commands: Commands<'w, 's>,
+    /// 子实体查询，用于遍历装甲的子物体层级
     children: Query<'w, 's, Read<Children>>,
+    /// 父子关系查询，用于查找实体的父级
     child_of: Query<'w, 's, Read<ChildOf>>,
+    /// 名称查询，用于按名称匹配装甲子物体
     name: Query<'w, 's, Read<Name>, With<ChildOf>>,
+    /// 网格组件查询，用于获取实体的 3D 网格句柄
     mesh_query: Query<'w, 's, Read<Mesh3d>>,
+    /// 网格资产资源，用于从句柄获取实际网格数据
     mesh_assets: Res<'w, Assets<Mesh>>,
 }
 
 #[derive(Component, Clone)]
+/// 装甲根实体标记组件，携带全局唯一的装甲 ID
 pub struct ArmorRoot {
+    /// 全局唯一的装甲标识符
     pub id: ArmorId,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+/// 装甲 ID 包装类型，内部使用 usize 实现全局递增编号
 pub struct ArmorId(usize);
 
 impl ArmorId {
+    /// 获取内部 usize 值
     pub const fn as_usize(self) -> usize {
         self.0
     }
 }
 
 #[derive(Component, Clone)]
+/// 装甲部件组件，记录装甲各子部件的实体引用（标记点、灯光、顶点）
 pub struct ArmorParts {
+    /// 标记点实体
     marker: Entity,
+    /// 灯光条实体数组 [左侧, 右侧]
     lights: [Entity; 2],
+    /// 顶点数据实体数组 [左侧, 右侧]
     vertices: [Entity; 2],
 }
 
+// 辅助宏：为 ArmorParts 生成根据 Side 获取对应侧部件的访问方法
 macro_rules! impl_side {
     ($method_name:ident, $field:ident) => {
         #[inline]
@@ -129,9 +186,12 @@ macro_rules! impl_side {
 }
 
 impl ArmorParts {
+    // 生成 light(side) 方法，获取指定侧的灯光条实体
     impl_side!(light, lights);
+    // 生成 vertex(side) 方法，获取指定侧的顶点数据实体
     impl_side!(vertex, vertices);
 
+    /// 获取装甲标记点实体
     #[inline]
     #[must_use]
     pub fn marker(&self) -> Entity {
@@ -140,6 +200,7 @@ impl ArmorParts {
 }
 
 impl ArmorConstructor<'_, '_> {
+    // 从实体中获取 Mesh 网格数据
     fn get_mesh(&self, entity: Entity) -> Option<&Mesh> {
         let mesh_handle = self.mesh_query.get(entity).ok()?;
         self.mesh_assets.get(mesh_handle)

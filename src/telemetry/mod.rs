@@ -70,6 +70,8 @@ impl TelemetryPipeline {
     }
 
     /// 获取当前注册的导出器数量。
+    ///
+    /// 返回值：已注册的导出器个数。
     pub fn exporter_count(&self) -> usize {
         self.exporters.len()
     }

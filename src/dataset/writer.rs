@@ -1,3 +1,11 @@
+//! `writer` 模块
+//!
+//! 数据集写入器，负责将每帧画面与装甲标注保存为标注格式文件。
+//! 输出格式：
+//! - `images/` 目录：JPG 格式的渲染画面
+//! - `label/` 目录：TXT 格式的标签文件，每行一块装甲的标注信息
+//!   格式：`<color_id> <type_id> <label_id> <x1> <y1> <x2> <y2> <x3> <y3> <x4> <y4>`
+
 // 装甲类型、装甲编号枚举（项目内部装甲定义）
 use crate::robomaster::prelude::{ArmorLabel, ArmorType};
 // Bevy引擎基础类型
@@ -11,23 +19,36 @@ use std::io::ErrorKind::Other;
 use std::io::{BufWriter, Error, Write};
 use std::path::{Path, PathBuf};
 
-/// 装甲所属阵营颜色，映射为数字类别id
+/// 装甲所属阵营颜色，映射为数字类别id。
+///
+/// 每个变体对应一个 u8 类别编号，用于写入标签文件。
 #[repr(u8)] // 强制枚举底层为u8，方便直接转数字写入标签文件
 #[derive(Debug, Copy, Clone)]
 pub enum ArmorColor {
-    Blue = 0,    // 蓝方装甲
-    Red = 1,     // 红方装甲
-    Gray = 2,    // 灰色中立装甲/无效装甲
-    Purple = 3,  // 紫色特殊装甲（哨兵/能量机关装甲）
+    /// 蓝方装甲
+    Blue = 0,
+    /// 红方装甲
+    Red = 1,
+    /// 灰色中立装甲/无效装甲
+    Gray = 2,
+    /// 紫色特殊装甲（哨兵/能量机关装甲）
+    Purple = 3,
 }
 
-/// 单块装甲完整标注信息
+/// 单块装甲完整标注信息。
+///
+/// 包含装甲的阵营颜色、类型、编号以及四个角点的归一化坐标。
+/// 用于写入数据集标签文件，每块装甲对应一行标注。
 #[derive(Debug, Clone)]
 pub struct ArmorEntry {
-    pub color: ArmorColor,    // 装甲所属阵营颜色
-    pub typ: ArmorType,       // 装甲类型：大装甲/小装甲/哨兵装甲等
-    pub label: ArmorLabel,    // 装甲编号：0~5 对应车辆各个装甲板
-    pub points: [Vec2; 4],    // 装甲四个角的像素坐标 [左上、右上、右下、左下]，关键点检测必备
+    /// 装甲所属阵营颜色
+    pub color: ArmorColor,
+    /// 装甲类型：大装甲/小装甲/哨兵装甲等
+    pub typ: ArmorType,
+    /// 装甲编号：0~5 对应车辆各个装甲板
+    pub label: ArmorLabel,
+    /// 装甲四个角的归一化像素坐标 [左上、右上、右下、左下]，关键点检测必备
+    pub points: [Vec2; 4],
 }
 
 /// 数据集写入管理器

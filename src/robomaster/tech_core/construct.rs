@@ -1,3 +1,11 @@
+// ============================================================
+// 模块名：tech_core/construct
+// 作用：科技核心构造与更新模块
+// 职责：定义科技核心的全部数据结构 (灯光组、颜色、阶段、灯光程序等)，
+//       提供场景初始化、每帧灯光更新和调试阶段切换功能，以及
+//       科技核心状态的 JSON 序列化接口。
+// ============================================================
+
 use super::consts::{
     BLUE_LIGHT_NAMES, FIRST_LIGHT_SEGMENT_COUNT, FLOW_SEGMENT_HZ, RED_LIGHT_NAMES,
 };
@@ -14,19 +22,33 @@ use bevy::scene::SceneInstanceReady;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+/// 科技核心根组件，标记场景中的科技核心根节点。
+///
+/// 该组件在场景文件 (如 GLTF) 加载时由外部添加，`setup_tech_core` 系统
+/// 检测到场景加载完成后会自动搜索灯光实体并完成初始化。
 #[derive(Component, Debug)]
 pub struct TechCoreRoot;
 
+/// 科技核心的灯光组标识，用于区分三组环形灯光。
+///
+/// 第一组 (First) 为分段式流光灯带，支持分段独立控制；
+/// 第二组 (Second) 和第三组 (Third) 为整体式灯环，仅支持整体颜色控制。
+/// 不同比赛阶段下各组灯光显示不同的颜色、闪烁和流水效果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TechCoreLightGroup {
+    /// 第一组灯光，分段式环形灯带，支持流水和组装指示效果。
     First,
+    /// 第二组灯光，整体式灯环。
     Second,
+    /// 第三组灯光，整体式灯环。
     Third,
 }
 
 impl TechCoreLightGroup {
+    /// 所有灯光组的常量数组，按 First, Second, Third 顺序排列，便于遍历。
     pub const ALL: [Self; 3] = [Self::First, Self::Second, Self::Third];
 
+    /// 返回灯光组的零基索引 (0, 1, 2)，用于数组下标访问。
     const fn index(self) -> usize {
         match self {
             Self::First => 0,
@@ -35,19 +57,36 @@ impl TechCoreLightGroup {
         }
     }
 
+    /// 返回灯光组的 1-based 序号，用于 JSON 输出中的 group 字段。
+    ///
+    /// 返回值：First 返回 1, Second 返回 2, Third 返回 3。
     pub const fn number(self) -> u8 {
         self.index() as u8 + 1
     }
 }
 
+/// 灯光颜色枚举，定义科技核心支持的颜色种类。
+///
+/// - `White`: 白色灯光
+/// - `Team`: 队伍颜色 (红队为红色，蓝队为蓝色)
+/// - `Green`: 绿色灯光
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LightColor {
+    /// 白色灯光。
     White,
+    /// 队伍颜色，根据队伍不同显示红色或蓝色。
     Team,
+    /// 绿色灯光。
     Green,
 }
 
 impl LightColor {
+    /// 根据队伍将颜色转换为对应的 JSON 字符串标识。
+    ///
+    /// 参数：
+    /// - `team`: 队伍信息 (红队或蓝队)，仅在 `Team` 变体时使用。
+    ///
+    /// 返回值：颜色字符串，如 "white", "red", "blue", "green"。
     pub const fn as_str_for_team(self, team: Team) -> &'static str {
         match self {
             Self::White => "white",
@@ -60,13 +99,19 @@ impl LightColor {
     }
 }
 
+/// 闪烁频率枚举，定义两种闪烁速率。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlinkRate {
+    /// 1 Hz 闪烁 (每秒 1 次完整亮灭周期)。
     Hz1,
+    /// 3 Hz 闪烁 (每秒 3 次完整亮灭周期)。
     Hz3,
 }
 
 impl BlinkRate {
+    /// 返回闪烁频率的数值 (Hz)。
+    ///
+    /// 返回值：`Hz1` 返回 1.0, `Hz3` 返回 3.0。
     pub const fn hz(self) -> f64 {
         match self {
             Self::Hz1 => 1.0,
@@ -75,29 +120,57 @@ impl BlinkRate {
     }
 }
 
+/// 第五步组装灯光程序枚举，描述组装进行中与完成后的灯光状态。
+///
+/// - `InProgress`: 组装进行中，目标段显示队伍色，能量单元段显示白色。
+/// - `Completed`: 组装完成，目标段显示绿色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssemblyLightProgram {
+    /// 组装进行中，目标段和能量单元段分别显示不同颜色。
     InProgress,
+    /// 组装完成，目标段显示绿色。
     Completed,
 }
 
+/// 灯光程序枚举，定义科技核心灯光的全部显示模式。
+///
+/// - `Off`: 关闭，所有灯光熄灭。
+/// - `Solid(LightColor)`: 常亮指定颜色。
+/// - `Blink { color, rate }`: 按指定频率闪烁，亮半周期显示颜色，暗半周期熄灭。
+/// - `Flow { color }`: 流水灯效果，灯光沿环形灯带依次点亮再折返。
+/// - `Assembly(AssemblyLightProgram)`: 第五步组装专用灯光程序，分段控制目标段和能量单元段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LightProgram {
+    /// 灯光关闭。
     Off,
+    /// 常亮指定颜色。
     Solid(LightColor),
+    /// 按指定频率闪烁。
     Blink { color: LightColor, rate: BlinkRate },
+    /// 流水灯效果。
     Flow { color: LightColor },
+    /// 第五步组装专用灯光程序。
     Assembly(AssemblyLightProgram),
 }
 
 impl LightProgram {
-    /// Returns the active color only for programs with a uniform group color.
-    /// Segmented assembly guidance is described by its active segments instead.
+    /// 返回当前灯光程序在给定时刻的活跃颜色。
+    ///
+    /// 对于 `Off` 返回 `None`；对于 `Solid` 返回固定颜色；
+    /// 对于 `Blink` 根据时间计算闪烁相位，亮半周期返回颜色，暗半周期返回 `None`；
+    /// 对于 `Flow` 返回流水颜色；对于 `Assembly(InProgress)` 返回 `None` (分段控制而非整体颜色)；
+    /// 对于 `Assembly(Completed)` 返回绿色。
+    ///
+    /// 参数：
+    /// - `elapsed_secs`: 当前阶段已过去的秒数。
+    ///
+    /// 返回值：当前活跃的颜色，如果灯光熄灭则返回 `None`。
     pub fn active_color(self, elapsed_secs: f64) -> Option<LightColor> {
         match self {
             Self::Off => None,
             Self::Solid(color) => Some(color),
             Self::Blink { color, rate } => {
+                // 亮半周期返回颜色，暗半周期返回 None
                 ((elapsed_secs * rate.hz()).fract() < 0.5).then_some(color)
             }
             Self::Flow { color } => Some(color),
@@ -106,6 +179,12 @@ impl LightProgram {
         }
     }
 
+    /// 将灯光程序序列化为 JSON 值，用于状态上报。
+    ///
+    /// 参数：
+    /// - `team`: 队伍信息，用于将 `Team` 颜色解析为具体颜色字符串。
+    ///
+    /// 返回值：包含模式、颜色、频率等字段的 JSON 值。
     fn json_value(self, team: Team) -> Value {
         match self {
             Self::Off => json!({ "mode": "off" }),
@@ -136,13 +215,26 @@ impl LightProgram {
     }
 }
 
+/// 第一组灯光的灯段索引，表示环形灯带上的一个具体分段。
+///
+/// 灯段编号从 1 到 `FIRST_LIGHT_SEGMENT_COUNT`，支持通过角度或序号创建。
+/// 用于流水灯效果和第五步组装灯光中指定目标段与能量单元段。
+/// 内部存储为零基索引 (0-based)，对外提供 1-based 编号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TechCoreFirstLightSegment(usize);
 
 impl TechCoreFirstLightSegment {
+    /// 最小有效段号，值为 1。
     pub const MIN_NUMBER: usize = 1;
+    /// 最大有效段号，值为 `FIRST_LIGHT_SEGMENT_COUNT`。
     pub const MAX_NUMBER: usize = FIRST_LIGHT_SEGMENT_COUNT;
 
+    /// 从零基索引创建灯段。
+    ///
+    /// 参数：
+    /// - `index`: 零基索引，范围为 `0..FIRST_LIGHT_SEGMENT_COUNT`。
+    ///
+    /// 返回值：如果索引有效则返回 `Some(Self)`，否则返回 `None`。
     pub const fn from_zero_based(index: usize) -> Option<Self> {
         if index < FIRST_LIGHT_SEGMENT_COUNT {
             Some(Self(index))
@@ -151,6 +243,12 @@ impl TechCoreFirstLightSegment {
         }
     }
 
+    /// 从 1-based 编号创建灯段。
+    ///
+    /// 参数：
+    /// - `number`: 1-based 编号，范围为 `MIN_NUMBER..=MAX_NUMBER`。
+    ///
+    /// 返回值：如果编号有效则返回 `Some(Self)`，否则返回 `None`。
     pub const fn from_number(number: usize) -> Option<Self> {
         if number >= Self::MIN_NUMBER && number <= Self::MAX_NUMBER {
             Some(Self(number - 1))
@@ -159,34 +257,70 @@ impl TechCoreFirstLightSegment {
         }
     }
 
+    /// 从弧度角计算对应的灯段。
+    ///
+    /// 将角度归一化到 `[0, 2π)` 范围，然后按比例映射到灯段索引。
+    /// 映射关系：角度 0 对应段 1，角度随角度增加递增。
+    ///
+    /// 参数：
+    /// - `radians`: 弧度角度值。
+    ///
+    /// 返回值：对应的灯段实例。
     pub fn from_angle_radians(radians: f64) -> Self {
+        // 将角度归一化到 [0, 2π) 范围，避免负角度或超过一圈的角度
         let normalized = radians.rem_euclid(std::f64::consts::TAU);
+        // 按比例映射到灯段索引，每个段对应 2π / FIRST_LIGHT_SEGMENT_COUNT 弧度
         let index = (normalized / std::f64::consts::TAU * FIRST_LIGHT_SEGMENT_COUNT as f64).floor()
             as usize;
-
+        // 防止浮点误差导致索引越界
         Self(index.min(FIRST_LIGHT_SEGMENT_COUNT - 1))
     }
 
+    /// 从角度计算对应的灯段 (角度制)。
+    ///
+    /// 参数：
+    /// - `degrees`: 角度值 (0-360)。
+    ///
+    /// 返回值：对应的灯段实例。
     pub fn from_angle_degrees(degrees: f64) -> Self {
         Self::from_angle_radians(degrees.to_radians())
     }
 
+    /// 返回内部存储的零基索引。
     const fn index(self) -> usize {
         self.0
     }
 
+    /// 返回灯段的 1-based 编号。
+    ///
+    /// 返回值：`1` 到 `FIRST_LIGHT_SEGMENT_COUNT` 之间的值。
     pub const fn number(self) -> usize {
         self.0 + 1
     }
 }
 
+/// 第五步组装中目标段与能量单元段的配置。
+///
+/// 该结构体指定灯光的目标段 (target) 和能量单元段 (energy_unit)，
+/// 用于控制组装过程中不同灯段的颜色显示。
+/// 目标段在组装进行中显示队伍色，完成后显示绿色；
+/// 能量单元段在组装进行中显示白色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TechCoreStep5Lights {
+    /// 目标灯段，组装完成后显示绿色。
     target: TechCoreFirstLightSegment,
+    /// 能量单元灯段，组装进行中显示白色。
     energy_unit: TechCoreFirstLightSegment,
 }
 
 impl TechCoreStep5Lights {
+    /// 创建新的第五步灯光配置。
+    ///
+    /// 参数：
+    /// - `target`: 目标灯段，组装完成后显示绿色。
+    /// - `energy_unit`: 能量单元灯段，组装进行中显示白色。
+    ///
+    /// 返回值：新的 `TechCoreStep5Lights` 实例。
     pub const fn new(
         target: TechCoreFirstLightSegment,
         energy_unit: TechCoreFirstLightSegment,
@@ -197,10 +331,12 @@ impl TechCoreStep5Lights {
         }
     }
 
+    /// 返回目标灯段。
     pub const fn target(self) -> TechCoreFirstLightSegment {
         self.target
     }
 
+    /// 返回能量单元灯段。
     pub const fn energy_unit(self) -> TechCoreFirstLightSegment {
         self.energy_unit
     }
@@ -315,20 +451,39 @@ fn step5_active_segments_json(
     Value::Array(segments)
 }
 
+/// 科技核心阶段枚举，定义比赛过程中科技核心经历的全部状态。
+///
+/// 每个阶段对应一组灯光程序，视觉上通过三组灯光的不同颜色、闪烁和流水效果
+/// 来反映当前所处的比赛阶段。阶段按顺序推进：
+/// MatchRunningIdle -> DifficultySelectedArmNotReady -> DifficultySelectedArmReady ->
+/// Step2Completed -> Step3Completed -> Step4Completed -> Step5InProgress ->
+/// Step5Completed -> ConfirmedRecovering。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TechCorePhase {
+    /// 比赛运行中，空闲状态。第一组关闭，第二、三组常亮队伍色。
     MatchRunningIdle,
+    /// 难度已选择，机械臂未就绪。第一组白色流水，第二、三组常亮队伍色。
     DifficultySelectedArmNotReady,
+    /// 难度已选择，机械臂已就绪。三组均以 1Hz 闪烁。
     DifficultySelectedArmReady,
+    /// 第二步完成。第一组白色 1Hz 闪烁，第二组队伍色 1Hz 闪烁，第三组队伍色 3Hz 闪烁。
     Step2Completed,
+    /// 第三步完成。第一组白色 1Hz 闪烁，第二、三组队伍色 3Hz 闪烁。
     Step3Completed,
+    /// 第四步完成。第一组白色 1Hz 闪烁，第二、三组常亮队伍色。
     Step4Completed,
+    /// 第五步进行中。第一组组装指示灯光，第二、三组常亮队伍色。
     Step5InProgress,
+    /// 第五步完成。第一组组装完成灯光，第二、三组常亮队伍色。
     Step5Completed,
+    /// 确认恢复中。三组均以 3Hz 闪烁。
     ConfirmedRecovering,
 }
 
 impl TechCorePhase {
+    /// 调试用阶段顺序列表，按比赛流程的完整推进顺序排列，共 9 个阶段。
+    ///
+    /// 用于 `next_debug` 方法实现阶段循环切换。
     pub const DEBUG_SEQUENCE: [Self; 9] = [
         Self::MatchRunningIdle,
         Self::DifficultySelectedArmNotReady,
@@ -341,6 +496,9 @@ impl TechCorePhase {
         Self::ConfirmedRecovering,
     ];
 
+    /// 返回当前阶段对应的三组灯光程序。
+    ///
+    /// 返回值：长度为 3 的数组，依次对应 First, Second, Third 灯光组的程序。
     pub const fn programs(self) -> [LightProgram; 3] {
         use AssemblyLightProgram::{Completed, InProgress};
         use BlinkRate::{Hz1, Hz3};
@@ -421,6 +579,9 @@ impl TechCorePhase {
         }
     }
 
+    /// 返回当前阶段的数字标识 (0-based)，用于 JSON 输出中的 id 字段。
+    ///
+    /// 返回值：0 到 8 之间的整数，按比赛流程顺序递增。
     pub const fn id(self) -> u8 {
         match self {
             Self::MatchRunningIdle => 0,
@@ -435,6 +596,9 @@ impl TechCorePhase {
         }
     }
 
+    /// 返回当前阶段的字符串标识，用于 JSON 输出中的 name 字段。
+    ///
+    /// 返回值：如 "match_running_idle", "step2_completed" 等。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MatchRunningIdle => "match_running_idle",
@@ -449,11 +613,18 @@ impl TechCorePhase {
         }
     }
 
+    /// 切换到调试序列中的下一个阶段 (循环)。
+    ///
+    /// 按照 `DEBUG_SEQUENCE` 定义的顺序切换到下一个阶段，到达末尾后回到开头。
+    ///
+    /// 返回值：下一个阶段的 `TechCorePhase` 实例。
     pub fn next_debug(self) -> Self {
+        // 查找当前阶段在 DEBUG_SEQUENCE 中的位置
         let index = Self::DEBUG_SEQUENCE
             .iter()
             .position(|phase| *phase == self)
             .unwrap_or(0);
+        // 切换到下一个阶段，到达末尾后循环回到开头
         Self::DEBUG_SEQUENCE[(index + 1) % Self::DEBUG_SEQUENCE.len()]
     }
 }
@@ -541,6 +712,20 @@ fn tech_core_phase_json_value(
     })
 }
 
+/// 从阶段迭代器生成科技核心状态 JSON 字符串。
+///
+/// 将每个阶段解析为包含阶段标识、时间戳和所有灯光组详细信息的 JSON 对象。
+/// 灯光组包括红蓝两队的 First, Second, Third 三组灯光，每个灯光的程序、
+/// 活跃颜色和活跃段等信息均被序列化。此函数适用于不依赖 `TechCore` 组件
+/// 的状态上报场景 (如模拟或测试)。
+///
+/// 参数：
+/// - `stamp_sec`: 时间戳的秒部分。
+/// - `stamp_nanosec`: 时间戳的纳秒部分。
+/// - `elapsed_secs`: 当前已过去的秒数，用于计算闪烁和流水灯相位。
+/// - `phases`: 科技核心阶段迭代器，每个元素对应一个核心的阶段。
+///
+/// 返回值：格式化后的 JSON 字符串。
 pub fn tech_core_state_json_from_phases<I>(
     stamp_sec: i32,
     stamp_nanosec: u32,
@@ -550,6 +735,7 @@ pub fn tech_core_state_json_from_phases<I>(
 where
     I: IntoIterator<Item = TechCorePhase>,
 {
+    // 将每个阶段解析为完整的 JSON 阶段描述
     let cores = phases
         .into_iter()
         .map(|phase| {
@@ -567,6 +753,20 @@ where
     .to_string()
 }
 
+/// 从 `TechCore` 组件迭代器生成科技核心状态 JSON 字符串。
+///
+/// 与 `tech_core_state_json_from_phases` 类似，但直接从 `TechCore` 组件
+/// 读取阶段信息、阶段已用时间和第五步灯光配置，适用于运行时状态上报。
+/// 每个核心的 `phase_elapsed_secs` 用于计算阶段内已用时间，确保闪烁和流水灯
+/// 的相位在阶段切换时正确重置。
+///
+/// 参数：
+/// - `stamp_sec`: 时间戳的秒部分。
+/// - `stamp_nanosec`: 时间戳的纳秒部分。
+/// - `elapsed_secs`: 当前已过去的秒数，用于计算阶段内已用时间。
+/// - `cores`: `TechCore` 组件引用迭代器。
+///
+/// 返回值：格式化后的 JSON 字符串。
 pub fn tech_core_state_json<'a, I>(
     stamp_sec: i32,
     stamp_nanosec: u32,
@@ -576,6 +776,7 @@ pub fn tech_core_state_json<'a, I>(
 where
     I: IntoIterator<Item = &'a TechCore>,
 {
+    // 从每个 TechCore 组件读取阶段、阶段已用时间和第五步灯光配置
     let cores = cores
         .into_iter()
         .map(|core| {

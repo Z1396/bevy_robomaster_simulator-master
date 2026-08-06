@@ -1,3 +1,8 @@
+//! 装甲碰撞命中检测模块
+//!
+//! 定义了 ArmorCollisionPlugin，通过 Bevy 观察者模式监听 Avian3D 物理引擎的
+//! CollisionEnd（碰撞分离）事件，判断子弹是否命中了装甲，并更新全局命中统计。
+
 // 引入 Avian3D 3D物理库：碰撞结束事件、碰撞事件启用标记组件
 use avian3d::prelude::{CollisionEnd, CollisionEventsEnabled};
 // Bevy 基础ECS类型：父子组件、指令队列、实体、观察者、插件、查询、资源、实体过滤器
