@@ -284,18 +284,36 @@ fn main() {
     // 挂载基础插件集：窗口、输入、渲染、音频、事件系统 + 物理引擎
     /*同样拿默认配置、解析垂直同步、创建 App。注意 app 是 mut ——后面要往里加一堆东西。 
     和 auto-gen 一样的基础插件包。 区别 ：auto-gen 是链式 add_plugins 一次接一次；
-    这里是先创建 app 再调，因为后面要根据配置条件性挂载很多插件。*/
+    这里是先创建 app 再调，因为后面要根据配置条件性挂载很多插件。
+    add_plugins() 是 App 的方法，作用：往 Bevy 引擎里挂载插件。
+    插件 = 一组打包好的功能（窗口、渲染、物理、输入、日志、UI、音频等）。*/
     app.add_plugins((
+        /*Bevy 官方内置插件集合，一次性内置：窗口、渲染、输入、时间、日志、资源、UI、事件系统。
+        .set(插件配置) 的作用：修改 DefaultPlugins 内部自带的某个子插件参数。 */
         DefaultPlugins
             .set(WindowPlugin {
+                //配置程序的主窗口，None 代表无窗口（后台无头渲染，适合纯服务器仿真）。
                 primary_window: Some(Window {
+                    //就是上一步解析、做过容错的窗口渲染模式，非法配置会自动降级为 AutoNoVsync，解除垂直同步限制，仿真可以跑超高帧率。
                     present_mode,
+                    //画布自动跟随父窗口大小缩放。
                     fit_canvas_to_parent: true,
+                    //其余 Window / WindowPlugin 全部沿用引擎默认配置，不用逐个手写。
                     ..default()
                 }),
                 ..default()
             })
+            /*render_plugin_for_platform() 是你自定义函数，返回配置完成的 RenderPlugin；
+            目的：不同系统自动适配渲染参数
+            Windows：全开特性、正常渲染；
+            Linux/Jetson 嵌入式设备：关闭部分后处理、抗锯齿，降低功耗；
+            无头服务器模式：关闭窗口渲染，只做物理与视觉推理。 */
             .set(render_plugin_for_platform()),
+        /*. 元组第二项：PhysicsPlugins::default()
+        Avian3D（Bevy 官方主推 3D 物理引擎）整套物理插件：
+        碰撞检测、刚体、速度、摩擦力、重力、物理子步迭代；
+        对应你配置里 physics.substep_count = 10 物理迭代步数；
+        用来实现战车移动、子弹碰撞、装甲碰撞、无人机物理运动。 */
         PhysicsPlugins::default(),
     ));
 
@@ -311,12 +329,19 @@ fn main() {
 
     /*- RoboMasterPlugins ：机甲业务（装甲/能量机关/前哨站/载具）。
     - DatasetPlugin ：数据集落盘逻辑（手动按 1 采一帧标注）。
-    - ConfigPlugin ：配置加载 + 热重载（ config.toml 改了自动生效）。 */
-    app.add_plugins(RoboMasterPlugins)
-        .add_plugins(DatasetPlugin)       // 数据集落地存储
-        .add_plugins(ConfigPlugin)        // TOML配置加载
+    - ConfigPlugin ：配置加载 + 热重载（ config.toml 改了自动生效）。 
+    在已经装好窗口、渲染、物理插件的 Bevy App 之上，挂载业务插件、全局资源、生命周期系统、划分运行时序，
+    把机器人仿真所有逻辑全部装配进引擎，严格管控执行顺序避免时序 BUG。*/
+    app.add_plugins(RoboMasterPlugins)    //机器人业务总插件，内部封装战车、云台、装甲、碰撞规则整套 RM 竞赛逻辑；
+        .add_plugins(DatasetPlugin)       // 数据集插件，自动截取仿真画面、装甲坐标、对战信息保存成数据集，用来训练装甲检测 YOLO
+        .add_plugins(ConfigPlugin)        // TOML配置加载配置插件，封装配置加载、重载逻辑。
 
-        // 初始化全局常驻资源（不属于任何实体，全局唯一）
+        // 初始化全局常驻资源（不属于任何实体，全局唯一）注册全局常驻资源（Resource）
+        /*Bevy ECS 规则：
+        Entity(实体)+Component(组件)：战车、子弹这种场景里的物体；
+        Resource：全局唯一、不属于任何实体的全局数据，整个程序只有一份。 */
+        /*.init_resource<T>()：类型自带 Default，引擎自动调用 T::default() 创建全局资源；
+        .insert_resource(实例)：手动传入自定义初始值，适合需要读取配置赋值的资源； */
         .init_resource::<CameraMode>()
         .init_resource::<ProjectileStatistics>()
         .init_resource::<ChassisObservationFrame>()
@@ -327,6 +352,7 @@ fn main() {
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81)) // 开启真实重力 9.81m/s²
         .insert_resource(SubstepCount(config.physics.substep_count))
         // 自瞄全局开关，原子布尔支持多线程安全修改
+        /*AtomicBool：普通布尔无法多线程修改，原子布尔支持物理线程、主线程同时读写自瞄开关。 */
         .insert_resource(SubscribeAutoAim(AtomicBool::new(false)))
         // 子弹发射冷却计时器，从配置读取冷却时长
         .insert_resource(ProjectileCooldown(Timer::from_seconds(
@@ -334,12 +360,14 @@ fn main() {
             TimerMode::Once,
         )))
 
-        // Startup生命周期：游戏启动仅运行一次的初始化系统
+        /*Startup 生命周期：引擎初始化完毕、进入主循环之前仅执行一次。
+        用途：生成地面、初始化子弹模板、初始化场景静态物体，只做一次场景搭建。 */
         .add_systems(Startup, (setup, setup_projectile))
 
         // 事件观察者：对应事件触发时自动执行函数
-        /*Observer vs Startup 的区别 ：Startup 只跑一次；Observer 是事件驱动，可能跑很多次。
-        这里 setup_vehicle 用 observer 是因为它依赖场景资产加载完成的事件。 */
+        /*区别于 Startup：Startup 固定启动跑一遍；Observer 监听事件，事件触发就执行，可反复运行；
+        setup_vehicle 用 Observer 的原因：机甲资产加载是异步的，必须监听「资产加载完成事件」再生成战车，提前生成会缺失模型贴图；
+        on_hit：子弹击中装甲抛出命中事件，观察者接收事件扣血、播放击中特效、统计命中数据。 */
         .add_observer(setup_ground)       // 生成地面平面
         .add_observer(setup_vehicle)       // 生成我方机甲实体
         .add_observer(setup_collision)     // 全局碰撞层分组配置
@@ -348,9 +376,12 @@ fn main() {
 
         // ====================== 严格划分 Update 阶段顺序，链式串行执行，避免时序错乱 ======================
         // 执行顺序：输入采集 → 游戏逻辑计算 → 相机位置更新 → 垃圾清理
-        /*- configure_sets ：在 Update 阶段定义系统集（SystemSet）的执行顺序。
-        - .chain() ：强制这四个集合 串行 ——Input 全部跑完 → GameLogic → Camera → Cleanup。避免时序错乱（比如先清理了子弹才检测发射，就漏帧）。
-        - GameplaySystems 是前面定义的枚举，每个变体代表一个系统集。 */
+        /*configure_sets：在 Update 帧阶段定义 4 个系统集合；
+        .chain()：强制串行顺序执行：
+        输入采集 → 游戏逻辑 → 更新相机 → 销毁清理
+        杜绝时序错乱经典 BUG：
+        比如还没读取键盘输入就执行战车移动、还没更新战车位置就渲染相机、还没判定子弹命中就清理子弹。
+        GameplaySystems 是自定义枚举，用来命名每一组业务系统。 */
         .configure_sets(
             Update,
             (
@@ -359,7 +390,7 @@ fn main() {
                 GameplaySystems::Camera,
                 GameplaySystems::Cleanup,
             )
-                .chain(),
+            .chain(),
         )
         // 向各个阶段挂载对应业务系统
         .add_systems(
@@ -372,12 +403,15 @@ fn main() {
                     switch_slapper_control, //Tab 切换操控的战车。
                     // 自由视角模式下禁用底盘键盘控制
                     //WASD 操控底盘， .run_if(...) 只在非自由视角时生效（自由视角时 WASD 给相机用）。
+                    /*所有按键、远程控制逻辑全部放在最前面，保证每一帧先拿到最新按键状态；
+                    .run_if(条件)：条件成立才运行当前系统：
+                    vehicle_controls.run_if(非自由视角)：自由漫游模式下 WASD 留给相机移动，不会同时操控战车，避免按键冲突。 */
                     vehicle_controls.run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
                     remote_vehicle_controls,  //远程控制（多机协同）。
                     gimbal_controls,//方向键操控云台。
                     remote_gimbal_controls,
                 )
-                    .in_set(GameplaySystems::Input),
+                .in_set(GameplaySystems::Input),
 
                 // GameLogic阶段：外观切换、UI帮助文本更新
                 //- change_appearance ：Shift+C 切换装甲外观。
@@ -388,30 +422,39 @@ fn main() {
                 (
                     /*- freecam_controls ：自由视角下 WASD+鼠标漫游， .run_if 只在 Free 模式生效。
                     - update_camera_follow ：非自由视角下相机跟随战车/云台， .run_if 只在非 Free 模式生效。
-                    - .before(RenderSystems::Render) ：确保相机位置算完再渲染。 */
+                    - .before(RenderSystems::Render) ：确保相机位置算完再渲染。 
+                    相机位置更新放在渲染之前；
+                    两种视角互斥运行，依靠 run_if 判断；
+                    before(RenderSystems::Render)：保证相机坐标更新完毕，再执行渲染管线，画面不会滞后一帧。*/
                     freecam_controls.run_if(|mode: Res<CameraMode>| mode.0 == FollowingType::Free),
                     systems::update_camera_follow
-                        .run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
+                    .run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
                 )
-                    .in_set(GameplaySystems::Camera)
-                    .before(RenderSystems::Render),
+                .in_set(GameplaySystems::Camera)
+                .before(RenderSystems::Render),
 
                 // Cleanup阶段：过期子弹销毁、F2截图触发、截图异步保存
                 (
                     /*- cleanup_projectiles ：清理过期/出界子弹。
                     - screenshot_on_f2 ：F2 按下截图， .run_if 只在 F2 刚按下时触发。
-                    - screenshot_saving ：异步保存截图到磁盘。 */
+                    - screenshot_saving ：异步保存截图到磁盘。 
+                    帧末尾统一销毁过期子弹，防止场景实体无限堆积造成卡顿；
+                    input.just_pressed(KeyCode::F2)：只在按下瞬间触发截图，按住 F2 不会连续截图；
+                    截图保存做成异步系统，避免写入磁盘阻塞主线帧。*/
                     cleanup_projectiles,
                     screenshot_on_f2
                     /*关键概念 .run_if ：Bevy 的条件系统，闭包返回 true 才执行该系统。比 if 分支更高效——系统注册了但被跳过。 */
-                        .run_if(|input: Res<ButtonInput<KeyCode>>| input.just_pressed(KeyCode::F2)),
+                    .run_if(|input: Res<ButtonInput<KeyCode>>| input.just_pressed(KeyCode::F2)),
                     screenshot_saving,
                 )
-                    .in_set(GameplaySystems::Cleanup),
+                .in_set(GameplaySystems::Cleanup),
             ),
         )
 
         // PostUpdate阶段：所有实体Transform传播完毕之后，采集底盘观测数据
+        /*Bevy 生命周期顺序：
+        Startup → Update → PostUpdate → Render渲染
+        TransformSystems::Propagate：父实体坐标同步传播到所有子实体（战车→云台→枪口的坐标同步）。 */
         .add_systems(
             PostUpdate,   //Update 之后、渲染之前的阶段。
             update_chassis_observation.after(TransformSystems::Propagate),

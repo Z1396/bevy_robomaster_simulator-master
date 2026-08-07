@@ -8,15 +8,29 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use std::path::Path;
 
+//#[xxx] 整体叫做属性宏（Attribute Macro），写在结构体 / 函数上方用来修饰它。
 /// 顶层全局配置资源，对应 config.toml 完整结构
 /// #[derive(Resource)]：标记为 Bevy 全局资源，全局可 Res<SimulationConfig> 获取
 /// Deserialize：支持从 TOML 字符串解析
 /// Reflect：支持 Bevy 反射，方便 egui 面板查看修改配置
+/*serde 是编译期确定结构；
+reflect 是运行时动态操作结构体：
+根据字符串 "bullet_speed" 获取 / 修改结构体成员；
+UI 编辑器（Bevy Inspector）拖拽改参数；
+热重载配置、动态组件编辑；
+ECS 通用遍历组件。 */
 /// Clone：允许整体拷贝配置
 #[derive(Resource, Deserialize, Reflect, Clone)]
 #[reflect(Resource)]
 pub struct SimulationConfig {
     /// 窗口、垂直同步配置
+    /*专门配合 serde（Rust 主流序列化库，解析 JSON/TOML/YAML）使用：
+    反序列化时，如果字段在输入数据里缺失，自动给该字段填充类型默认值，不会直接报错解析失败。
+    分为两种用法：字段级别、结构体级别。 
+    用法 1：写在结构体上方 #[serde(default)]
+    作用：整个结构体所有字段，如果配置里缺失，全部填充该类型的 Default::default() 默认值。
+    用法 2：写在单个字段上方，仅该字段缺失时填充默认值
+    只单独控制某一个字段兜底，其余字段缺失依旧报错*/
     #[serde(default)]
     pub window: WindowConfig,
     /// 调试开关：egui面板、实体检视器、性能诊断
@@ -288,10 +302,36 @@ impl Default for LivoxRosConfig {
 
 impl SimulationConfig {
     /// 从本地 config.toml 加载配置
+    /*Result<**Self**, ...>
+    成功的时候，返回 Self，也就是当前这个配置结构体（SimulationConfig）。
+    Result<..., **Box<dyn std::error::Error + Send + Sync>**>
+    失败的时候，返回的错误类型，这一坨就是用来存放任意种类错误的容器。 */
+    /*2. dyn Error
+    代表：可以存放任意实现了 Error 的错误类型。
+    如果你写成固定类型，比如 Result<SimConfig, IoError>，那这个函数只能报错「文件错误」，一旦 TOML 解析出错，类型对不上，编译报错。
+    用 dyn Error 之后：读文件报错、解析报错，两种不同错误都能塞进去。
+    3. Box<>
+    Box = 堆上的盒子。
+    错误类型大小各不相同，没法统一塞进 Result，用 Box 把错误打包放到堆里，统一大小，才能放进 Result。
+    4. + Send + Sync
+    多线程安全标记。
+    配置有可能在多线程加载，加上这俩标记，保证这个错误可以在线程之间安全传递，纯工程规范，日常写配置不用深究。 */
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // 读取toml文本
+        /*std::fs::read_to_string("config.toml")
+        读取程序运行目录下的 config.toml 整个文件，返回 Result<String, std::io::Error>。
+        ? 问号运算符
+        如果读取文件失败（文件不存在、权限不够、读取出错），直接把错误向上返回，整个 load() 立刻变成 Err(io错误)。
+        如果读取成功，把字符串赋值给 content。 */
         let content = std::fs::read_to_string("config.toml")?;
         // toml::from_str 解析文本映射到 SimulationConfig 结构体
+        /*toml::from_str(&content)
+        将 TOML 字符串，反序列化为 SimulationConfig，返回 Result<SimulationConfig, toml::de::Error>。
+        前提：结构体必须派生 / 实现 Deserialize，也就是你写的 #[derive(Deserialize)]。
+        内部的 ?
+        TOML 解析出错（格式乱了、类型不对、缺少必填字段），错误向上返回，整个函数返回 Err。
+        外层 Ok(...)
+        解析全部成功后，包进 Ok 作为正常返回值。 */
         Ok(toml::from_str(&content)?)
     }
 }
@@ -299,6 +339,17 @@ impl SimulationConfig {
 impl Default for SimulationConfig {
     /// 全局配置默认逻辑：优先加载 config.toml，文件缺失/损坏则使用硬编码默认值
     fn default() -> Self {
+        /*2. .unwrap_or_else(...)
+        这是 Result 自带的方法，专门用来：成功就取值，失败执行自定义兜底逻辑。
+        对比容易混淆的三个方法，方便你区分：	
+        .unwrap()	成功取值，失败直接程序崩溃 panic，不推荐配置加载使用		
+        .unwrap_or(xxx)	失败直接写死一个固定值，拿不到错误信息		
+        `.unwrap_or_else(	e	{})`	失败可以拿到错误 e，动态生成兜底值（配置场景标准写法）
+        3. |e| { ... }
+        这是 Rust 闭包，等同于一个临时匿名函数：
+        e：捕获 load() 抛出的错误（文件不存在、toml 解析错误等）；
+        大括号内部写「加载失败后的补救方案」；
+        闭包最终必须返回一个和成功分支同类型的配置实例。 */
         Self::load().unwrap_or_else(|e| {
             warn!("Failed to load config.toml: {}, using defaults", e);
             // 全部模块填充出厂默认参数
