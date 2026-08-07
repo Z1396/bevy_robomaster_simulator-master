@@ -531,7 +531,7 @@ fn main() {
 
 /*main() 
    │
-   ├─ ① Args::parse() 解析命令行
+   ├─ ① Args::parse() 
    │
    ├─ ② 判断 --auto-gen？
    │     ├─ 是 → 走【数据集自动生成模式】(精简 App) → run() → 退出
