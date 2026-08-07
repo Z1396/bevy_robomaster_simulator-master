@@ -213,7 +213,7 @@ fn main() {
         let config = SimulationConfig::default();
         // 解析垂直同步配置，非法值兜底关闭垂直同步
         /*- 调用辅助函数 present_mode_from_config ，把字符串（如 "immediate" ）转成 Bevy 的 PresentMode 枚举。
-        - 返回 Option<PresentMode> ，匹配成功就是 Some(...) ，配置非法就是 None 。
+        - 返回 Option<PresentMode> ，匹配成功就是 Some(...) ，配置非法就是 None,Some 是枚举 Option 的其中一个构造变体，本身是一个单元结构体风格的构造函数。
         - unwrap_or_else ：成功就取里面的值；失败时执行闭包（打印警告 + 兜底用 AutoNoVsync 关闭垂直同步）。 
         present_mode_from_config 内部逻辑 （前面 136-146 行）：就是一个 match ，
         把 "vsync" / "immediate" / "fifo" 等字符串映射到对应的 PresentMode 枚举值，非法值返回 None 。 */
@@ -226,34 +226,40 @@ fn main() {
                 PresentMode::AutoNoVsync
             });
 
+        //- App::new() ：创建一个空的 Bevy 应用实例（ECS 世界 + 调度器）。
         App::new()
+            // - add_plugins(...) ：批量挂载插件。插件 = 一组预打包的"资源+系统+事件"。
             .add_plugins((
-                /*DefaultPlugins：Bevy 基础全家桶（窗口、渲染、输入、事件、音频等）；
-                覆盖 WindowPlugin：使用上面解析好的垂直同步策略；fit_canvas_to_parent 窗口自适应布局；
-                .set(render_plugin_for_platform())：复用前面的平台渲染适配逻辑，WSL 环境自动切换兼容渲染方案，防止 WSL 黑屏崩溃； */
+                //- DefaultPlugins ：Bevy 的"全家桶"——窗口、渲染、输入、音频、事件循环、资产加载、时间。
                 DefaultPlugins
+                    // - .set(WindowPlugin { ... }) ：覆盖默认的窗口插件配置。 
                     .set(WindowPlugin {
                         primary_window: Some(Window {
+                            //present_mode 设垂直同步策略
                             present_mode,
+                            //fit_canvas_to_parent: true 让画布跟随父容器自适应（浏览器/winit 嵌入场景用）。
                             fit_canvas_to_parent: true, // 窗口尺寸跟随父容器自动适配
                             ..default()
                         }),
                         ..default()
                     })
-                    .set(render_plugin_for_platform()), // WSL渲染兼容
-                /*PhysicsPlugins::default()：载入 Avian3D 物理引擎，用来模拟机甲运动、碰撞。 */
+                /*- 先调 is_wsl() 检测是不是 WSL 环境（看 WSL_DISTRO_NAME 环境变量、 /proc/sys/kernel/osrelease 里有没有 microsoft ）。
+                - 是 WSL → 返回兼容性优先的 RenderPlugin （允许非合规显卡适配器、 Compatibility 优先级），避免 WSL 黑屏崩溃。
+                - 不是 WSL → 返回默认高性能 RenderPlugin 。*/
+                .set(render_plugin_for_platform()), // WSL渲染兼容
+                //- PhysicsPlugins::default() ：挂载 avian3d 物理引擎（碰撞、刚体、重力）。
                 PhysicsPlugins::default(), // 挂载Avian3D物理引擎
             ))
             
-            .add_plugins(RoboMasterPlugins)  // 机甲基础实体插件
-            .add_plugins(ConfigPlugin)      // 加载全局配置
-            .add_observer(setup_vehicle)    // 自动生成机甲载具
-            .insert_resource(Gravity(Vec3::ZERO)) // 数据集生成阶段关闭重力，方便均匀采集各类姿态样本
-            .insert_resource(SubstepCount(config.physics.substep_count)) // 物理子迭代次数，提升弹道精度
-            .add_plugins(AutoGenPlugin) // 全自动数据集生成核心插件
+            .add_plugins(RoboMasterPlugins)  // RoboMasterPlugins ：机甲业务插件合集（装甲、能量机关、前哨站、载具动力学等，全打包在内）。
+            .add_plugins(ConfigPlugin)      // ConfigPlugin ：配置加载插件（虽然这里用 default() ，但热重载逻辑依然在）。
+            .add_observer(setup_vehicle)    // add_observer(setup_vehicle) ：注册一个 观察者 ——当 SceneInstanceReady 事件触发时（场景加载完成），自动调 setup_vehicle 生成机甲。
+            .insert_resource(Gravity(Vec3::ZERO)) // insert_resource(Gravity(Vec3::ZERO)) ：把重力设为零向量——数据集采集时不想要重力干扰姿态。
+            .insert_resource(SubstepCount(config.physics.substep_count)) // insert_resource(SubstepCount(...)) ：物理子步迭代次数，值越大弹道越精确但越慢。
+            .add_plugins(AutoGenPlugin) // AutoGenPlugin ：自动遍历姿态网格、移动相机、采图、写数据集的核心插件
             /*启动数据集生成的 Bevy 游戏循环，阻塞运行，直到自动采集完成后 App 主动退出。 */
             .run();
-        // 自动生成模式运行结束，直接return，不再执行下方完整交互仿真逻辑
+        // return ：auto-gen 模式跑完直接退出，不执行下面的完整模式。
         return;
     }
 
