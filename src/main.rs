@@ -282,6 +282,9 @@ fn main() {
     let mut app = App::new();
 
     // 挂载基础插件集：窗口、输入、渲染、音频、事件系统 + 物理引擎
+    /*同样拿默认配置、解析垂直同步、创建 App。注意 app 是 mut ——后面要往里加一堆东西。 
+    和 auto-gen 一样的基础插件包。 区别 ：auto-gen 是链式 add_plugins 一次接一次；
+    这里是先创建 app 再调，因为后面要根据配置条件性挂载很多插件。*/
     app.add_plugins((
         DefaultPlugins
             .set(WindowPlugin {
@@ -296,7 +299,9 @@ fn main() {
         PhysicsPlugins::default(),
     ));
 
-    // 配置开启调试EGUI面板时，加载EGUI + 实体检视器
+    /*- config.debug.egui 为 true → 加载 Egui（即时模式 GUI 库）。
+    - 进一步 config.debug.inspector 为 true → 加载 WorldInspectorPlugin ，运行时弹出窗口可查看所有实体/组件/资源。
+    - 这两个会显著掉帧，调试用。 */
     if config.debug.egui {
         app.add_plugins(EguiPlugin::default());
         if config.debug.inspector {
@@ -304,7 +309,9 @@ fn main() {
         }
     }
 
-    // 挂载业务插件合集
+    /*- RoboMasterPlugins ：机甲业务（装甲/能量机关/前哨站/载具）。
+    - DatasetPlugin ：数据集落盘逻辑（手动按 1 采一帧标注）。
+    - ConfigPlugin ：配置加载 + 热重载（ config.toml 改了自动生效）。 */
     app.add_plugins(RoboMasterPlugins)
         .add_plugins(DatasetPlugin)       // 数据集落地存储
         .add_plugins(ConfigPlugin)        // TOML配置加载
@@ -331,6 +338,8 @@ fn main() {
         .add_systems(Startup, (setup, setup_projectile))
 
         // 事件观察者：对应事件触发时自动执行函数
+        /*Observer vs Startup 的区别 ：Startup 只跑一次；Observer 是事件驱动，可能跑很多次。
+        这里 setup_vehicle 用 observer 是因为它依赖场景资产加载完成的事件。 */
         .add_observer(setup_ground)       // 生成地面平面
         .add_observer(setup_vehicle)       // 生成我方机甲实体
         .add_observer(setup_collision)     // 全局碰撞层分组配置
@@ -339,6 +348,9 @@ fn main() {
 
         // ====================== 严格划分 Update 阶段顺序，链式串行执行，避免时序错乱 ======================
         // 执行顺序：输入采集 → 游戏逻辑计算 → 相机位置更新 → 垃圾清理
+        /*- configure_sets ：在 Update 阶段定义系统集（SystemSet）的执行顺序。
+        - .chain() ：强制这四个集合 串行 ——Input 全部跑完 → GameLogic → Camera → Cleanup。避免时序错乱（比如先清理了子弹才检测发射，就漏帧）。
+        - GameplaySystems 是前面定义的枚举，每个变体代表一个系统集。 */
         .configure_sets(
             Update,
             (
@@ -355,22 +367,28 @@ fn main() {
             (
                 // Input阶段：所有输入控制系统
                 (
-                    auto_aim_switch,
-                    following_controls,
-                    switch_slapper_control,
+                    auto_aim_switch,  //F5 自瞄开关
+                    following_controls,     //F3 自瞄跟随开关
+                    switch_slapper_control, //Tab 切换操控的战车。
                     // 自由视角模式下禁用底盘键盘控制
+                    //WASD 操控底盘， .run_if(...) 只在非自由视角时生效（自由视角时 WASD 给相机用）。
                     vehicle_controls.run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
-                    remote_vehicle_controls,
-                    gimbal_controls,
+                    remote_vehicle_controls,  //远程控制（多机协同）。
+                    gimbal_controls,//方向键操控云台。
                     remote_gimbal_controls,
                 )
                     .in_set(GameplaySystems::Input),
 
                 // GameLogic阶段：外观切换、UI帮助文本更新
+                //- change_appearance ：Shift+C 切换装甲外观。
+                //- update_help_text ：刷新左下角帮助文字。
                 (change_appearance, update_help_text).in_set(GameplaySystems::GameLogic),
 
                 // Camera阶段：更新相机位置，必须在渲染之前执行
                 (
+                    /*- freecam_controls ：自由视角下 WASD+鼠标漫游， .run_if 只在 Free 模式生效。
+                    - update_camera_follow ：非自由视角下相机跟随战车/云台， .run_if 只在非 Free 模式生效。
+                    - .before(RenderSystems::Render) ：确保相机位置算完再渲染。 */
                     freecam_controls.run_if(|mode: Res<CameraMode>| mode.0 == FollowingType::Free),
                     systems::update_camera_follow
                         .run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
@@ -380,8 +398,12 @@ fn main() {
 
                 // Cleanup阶段：过期子弹销毁、F2截图触发、截图异步保存
                 (
+                    /*- cleanup_projectiles ：清理过期/出界子弹。
+                    - screenshot_on_f2 ：F2 按下截图， .run_if 只在 F2 刚按下时触发。
+                    - screenshot_saving ：异步保存截图到磁盘。 */
                     cleanup_projectiles,
                     screenshot_on_f2
+                    /*关键概念 .run_if ：Bevy 的条件系统，闭包返回 true 才执行该系统。比 if 分支更高效——系统注册了但被跳过。 */
                         .run_if(|input: Res<ButtonInput<KeyCode>>| input.just_pressed(KeyCode::F2)),
                     screenshot_saving,
                 )
@@ -391,26 +413,34 @@ fn main() {
 
         // PostUpdate阶段：所有实体Transform传播完毕之后，采集底盘观测数据
         .add_systems(
-            PostUpdate,
+            PostUpdate,   //Update 之后、渲染之前的阶段。
             update_chassis_observation.after(TransformSystems::Propagate),
+            //TransformSystems::Propagate ：Bevy 自带系统，把父实体的 Transform 传播到子实体的 GlobalTransform（场景树坐标更新）。
         )
 
         // 空格键发射子弹：必须等待Transform传播完成，才能拿到机甲最新世界坐标生成子弹
         .add_systems(
-            PostUpdate,
-            projectile_launch
-                .after(TransformSystems::Propagate)
+        PostUpdate,
+        projectile_launch
+        /*.after(TransformSystems::Propagate) ： 必须在坐标传播完成后再执行 ——否则拿到的战车世界坐标是上一帧的，子弹出生点就错了。 */
+        .after(TransformSystems::Propagate)
+                //projectile_launch ：空格发射子弹， .run_if 空格按下时才发射。
                 .run_if(|keyboard: Res<ButtonInput<KeyCode>>| keyboard.pressed(KeyCode::Space)),
         )
 
         // 无人机投放系统同样等待坐标更新完成
-        .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))
+        /*这就是为什么子弹要放 PostUpdate 而不是 Update ：Update 阶段云台刚转完，但坐标还没传播到子节点（枪口），PostUpdate.after(Propagate) 才能拿到最新枪口位置。 */
+        .add_systems(PostUpdate, uav_launch.after(TransformSystems::Propagate))//uav_launch ：无人机投放。
 
-        // FixedUpdate 固定物理帧率更新：子弹空气动力学
-        // FixedUpdate 步长恒定，不受帧率波动影响，保证弹道物理结果稳定
+        /*- FixedUpdate ： 固定步长 调度阶段（默认 60Hz，不受画面帧率影响）。
+        - projectile_aerodynamics ：弹丸空气动力学（重力下坠、风阻）。
+        - 放在这里是因为：物理仿真需要恒定步长才能稳定，画面帧率波动不能影响弹道。 */
         .add_systems(FixedUpdate, projectile_aerodynamics);
 
-    // 配置开启性能诊断，挂载帧率耗时打印插件
+    /*- config.debug.diagnostics 为 true → 加载帧率诊断插件。
+    - FrameTimeDiagnosticsPlugin ：采集 frame_time/fps。
+    - LogDiagnosticsPlugin ：每秒打印一次 fps/frame_time 到终端。
+    - 这就是你之前看到 fps: 17.5, frame_time: 56ms 那些日志的来源 。 */
     if config.debug.diagnostics {
         app.add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -418,7 +448,10 @@ fn main() {
         ));
     }
 
-    // 条件编译挂载ROS2插件
+    /*- #[cfg(feature = "ros2")] ：只有编译时加了 --features ros2 ，这段代码才编译进去。
+    - 开了 ros2 feature → 挂载 ROS2Plugin （话题发布/订阅、TF 树、图像采集）。
+    - 没开 → 只打印一条日志。
+    - 这是编译时决策，不是运行时 。 */
     #[cfg(feature = "ros2")]
     {
         app.add_plugins(ROS2Plugin::default());
@@ -428,8 +461,13 @@ fn main() {
     {
         info!("ROS2 integration disabled");
     }
+    
+    /*- 同样是条件编译，但多了一层运行时判断 should_enable_talos_plugin 。 should_enable_talos_plugin 内部逻辑 （184-198 行）：
 
-    // 条件编译挂载Talos采集插件（互斥ROS采集）
+    - 检查 ROS2 采集是否已激活（ RosCaptureContext 资源是否存在）。
+    - 检查环境变量 DAEDALUS_FORCE_TALOS_CAPTURE=1 是否设置。
+    - 返回 !ros_capture_active || force_talos_capture ——ROS 没采集 或 强制开启，才启用 Talos。
+    - 目的 ：避免 ROS2 和 Talos 两路采集同时跑冲突。 */
     #[cfg(feature = "talos")]
     {
         if should_enable_talos_plugin(&app) {
@@ -443,7 +481,8 @@ fn main() {
         }
     }
 
-    // 启动Bevy主游戏循环，阻塞运行
+    /*- 启动 Bevy 主循环， 阻塞 在这里。
+    - 每一帧： Startup(仅首帧) → Update → PostUpdate → FixedUpdate(按固定步长) → Render ，循环直到窗口关闭。 */
     app.run();
 }
 
@@ -477,4 +516,20 @@ fn main() {
               ├─ FixedUpdate 阶段（固定步长）
               │     projectile_aerodynamics (弹道物理)
               │
-              └─ Render 阶段（渲染出图） */
+              └─ Render 阶段（渲染出图） 
+
+            App                         Bevy 应用容器，装着 ECS 世界 + 调度器 
+            Plugin                      一组打包好的"资源+系统+事件"add_plugins 挂载 
+            Resource                    全局单例数据，insert_resource / init_resource 插入 
+            Component                   挂在实体上的数据片段 
+            System                      每帧/每阶段自动跑的函数 
+            SystemSet                   系统分组， 
+            configure_sets              控制组间顺序 
+            Observer                    事件触发的函数， add_observer 注册 
+            Startup                     动只跑一次的阶段 
+            Update                      帧跑，业务主逻辑 
+            PostUpdate Update           之后，渲染之前 
+            FixedUpdate                 固定步长，物理仿真专用 
+            run_if                      条件系统，闭包返回 true 才执行 
+            .chain()                    强制系统/系统集串行 
+            .before() / .after()        跨集合的顺序约束*/
