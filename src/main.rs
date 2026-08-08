@@ -159,15 +159,34 @@ fn is_wsl() -> bool {
 
 /// 根据操作系统环境生成适配的 RenderPlugin
 /// WSL环境使用兼容性优先渲染配置，普通系统使用默认高性能渲染配置
+/*RenderPlugin 是 Bevy 渲染管线核心插件，隶属于 DefaultPlugins 内置子插件，负责：
+渲染初始化、渲染队列、帧缓冲、后处理、纹理渲染、渲染时机调度、多窗口渲染、渲染至纹理等全部渲染能力。
+你代码里 DefaultPlugins.set(render_plugin_for_platform())，本质就是替换 DefaultPlugins 内部默认的 RenderPlugin 配置。 */
 fn render_plugin_for_platform() -> RenderPlugin {
     // Linux系统 + WSL环境，启用兼容模式
     if cfg!(target_os = "linux") && is_wsl() {
         return RenderPlugin {
+            /*RenderCreation 控制 Bevy 创建渲染后端的方式：
+            Automatic：自动探测可用显卡、自动选择 Vulkan/DX12 后端；
+            内部传入 WgpuSettings 用来配置 wgpu（Bevy 底层渲染库）的创建规则。 */
             render_creation: RenderCreation::Automatic(WgpuSettings {
+                
                 // 允许使用不完全符合WebGPU标准的显卡适配器，修复WSL显卡初始化失败
+                /*默认标志位叠加 ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER；
+                含义：允许 wgpu 加载不完全满足 WebGPU 规范的显卡适配器。
+                WSL 里的显卡是 Windows 显卡虚拟化转发出来的，并不是标准 Linux Vulkan 设备，
+                本身不完全兼容 WebGPU 完整规范。不加这个标记，wgpu 会直接拒绝初始化显卡，造成程序启动无窗口、渲染崩溃。 */
                 instance_flags: InstanceFlags::default()
                     | InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
+                
+                /*渲染选型优先级分为两种：
+                Compatibility 兼容性优先（当前配置）
+                优先选用能正常跑起来的显卡后端，牺牲部分渲染性能，优先保证能初始化成功。适配 WSL、老旧嵌入式显卡、兼容性差的环境。
+                Performance 性能优先
+                优先挑选性能最强的 Vulkan 设备，追求帧率，但是兼容性差，WSL 极易初始化失败。 */
                 priority: WgpuSettingsPriority::Compatibility, // 渲染优先级：兼容性 > 性能
+
+                /*其余所有 RenderPlugin、WgpuSettings 字段沿用 Bevy 默认配置，只修改我们手动指定的字段，避免破坏原有渲染逻辑。 */
                 ..default()
             }),
             ..default()
@@ -308,7 +327,7 @@ fn main() {
             Windows：全开特性、正常渲染；
             Linux/Jetson 嵌入式设备：关闭部分后处理、抗锯齿，降低功耗；
             无头服务器模式：关闭窗口渲染，只做物理与视觉推理。 */
-            .set(render_plugin_for_platform()),
+        .set(render_plugin_for_platform()),
         /*. 元组第二项：PhysicsPlugins::default()
         Avian3D（Bevy 官方主推 3D 物理引擎）整套物理插件：
         碰撞检测、刚体、速度、摩擦力、重力、物理子步迭代；

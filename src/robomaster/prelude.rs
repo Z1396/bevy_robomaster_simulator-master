@@ -24,10 +24,16 @@ pub use tech_core::prelude::*;
 pub struct RoboMasterPlugins;
 
 // 实现 Bevy 的 Plugin 特征，这是 Bevy 插件标准写法
+/*trait Plugin：Bevy 规定的「插件标准接口」
+只要给某个结构体实现 Plugin，它就能被 app.add_plugins(xxx) 加载 */
 impl Plugin for RoboMasterPlugins {
     /// app.add_plugins() 时自动执行，挂载所有机器人业务插件
+    /*插件被加载时，Bevy 自动调用这个 build 函数。
+    &self：插件自身实例（这里是空结构体，没用）
+    app: &mut App：整个游戏的引擎实例，&mut 代表我们可以修改游戏配置、注册逻辑 */
     fn build(&self, app: &mut App) {
         app
+            /*在主插件内部嵌套加载别的子插件，实现模块化拆分。优点：想关闭能量机关，注释一行即可，不用删代码 */
             // 实体外观状态插件：控制装甲亮灯、护甲变红、被击打变色等外观逻辑
             .add_plugins(StatefulAppearancePlugin)
             // 装甲系统：装甲碰撞、击打检测、血量、装甲组件挂载

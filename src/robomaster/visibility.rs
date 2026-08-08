@@ -158,37 +158,93 @@ impl Controller {
 
 /// 全局材质缓存资源
 /// 用途：把原有发光材质生成「自发光关闭的静音版本」，存入哈希表缓存，避免重复克隆材质
+/*
+1. #[derive(Resource)]
+Bevy 专属过程宏，标记这个结构体是全局资源，只有加了这个，app.init_resource 才能识别它。
+2. #[derive(Default)]
+自动生成默认构造：
+HashMap 默认是空哈希表，所以初始化后 muted = 空HashMap。*/
 #[derive(Resource, Default)]
 struct MaterialCache {
     /// key：原始材质ID，value：无光静音材质句柄
+    /*拆解两个泛型：
+    Key：AssetId<StandardMaterial>
+    材质的唯一 ID，每个装甲发光材质都有独一无二的 ID；
+    Value：Handle<StandardMaterial>
+    Bevy 的资源句柄，可以理解成材质的「指针 / 引用」，拿到句柄就能修改模型材质。
+    业务逻辑人话翻译
+    HashMap {
+    原始发光材质ID => 对应的熄灭无光材质
+    }
+    装甲打爆之后，拿着原本材质的 ID，查表拿到无光材质，替换装甲外表，实现 “装甲熄灭变黑” 效果。 */
     muted: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
+    /*1. AssetId<T>
+    所有资源（材质、贴图、模型）在 Bevy 内部都会分配一个唯一 ID，用来区分不同素材。
+    2. Handle<T>
+    资源句柄 = 安全的材质 / 模型引用。
+    Bevy 不会让你直接裸指针访问显存里的材质，而是用 Handle 管理生命周期，防止内存崩溃。
+    Handle<StandardMaterial>：指向 PBR 物理材质的句柄。
+    3. StandardMaterial
+    Bevy 默认 PBR 材质，可以控制颜色、自发光、金属度。
+    装甲亮灯 = 调高 emissive 自发光；装甲击毁 = 把 emissive 改成黑色，灯熄灭。
+    4. HashMap<K,V>
+    标准字典结构：键对应值，用来做材质缓存复用，避免重复创建材质浪费显存。 */
 }
 
+/*3. 完整运行流程举例
+一号装甲被击毁，调用 cache.ensure_muted(&装甲材质句柄, &mut materials)；
+muted 是空表，查不到缓存；
+复制材质、关掉自发光生成熄灯材质，存入材质库 + 写入 muted；
+返回熄灯材质，一号装甲变黑；
+二号装甲和一号使用同款发光材质，后续被击毁；
+再次调用 ensure_muted，通过材质 ID 命中缓存，直接返回之前建好的熄灯材质，不再重复创建材质。 */
 impl MaterialCache {
-    /// 获取某个材质对应的无光版本，不存在则创建并存入缓存
+    /*给 MaterialCache 结构体新增一个成员方法 ensure_muted：
+    查询某个材质对应的熄灭无光材质。如果缓存里已经做好了，直接拿来用；如果没有，现场生成熄灯材质、放进缓存再返回。
+    好处：不用单独在 Startup 一次性预加载所有材质，用到哪个装甲的熄灭材质，再生成哪个，按需创建。 */
     fn ensure_muted(
+        /*&mut self
+        self 就是调用这个方法的 MaterialCache 实例，&mut 代表要修改结构体内部的 muted 哈希表（插入新缓存）。
+        handle: &Handle<StandardMaterial>
+        传入装甲当前正在使用的发光材质句柄。
+        materials: &mut Assets<StandardMaterial>
+        Bevy 全局材质资源仓库，所有材质全都存在这里，必须可变引用才能新增材质。
+        返回值：Handle<StandardMaterial>
+        返回「熄灭版本材质的句柄」，拿到之后就可以替换装甲材质。 */
         &mut self,
         handle: &Handle<StandardMaterial>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Handle<StandardMaterial> {
+        //从材质句柄中拿到材质全局唯一 AssetId，用来当做 muted 哈希表的 Key。
         let id = handle.id();
         // 缓存命中，直接返回
+        /*self.muted.get(&id)：拿着材质 ID 去哈希表里查找熄灭材质；
+        if let Some(existing)：如果找到了（缓存命中）；
+        existing.clone()：克隆材质句柄（句柄克隆极其廉价，不会复制显存里的材质本体）直接返回，结束函数。
+        👉 核心优化：同款式装甲被多次打爆时，只会在第一次生成熄灭材质，后面全部查表复用。 */
         if let Some(existing) = self.muted.get(&id) {
             return existing.clone();
         }
         // 获取原始材质，取不到则返回原材质兜底
+        /*语法：Rust 的 let-else 语法。
+        materials.get(handle)：去全局材质仓库取出装甲原本发光的材质本体；
+        如果取不到材质（材质被销毁、资源丢失），直接 else 分支返回原始材质，避免程序崩溃；
+        能取到，就把原始材质存入变量 original 往下执行。 */
         let Some(original) = materials.get(handle) else {
             return handle.clone();
         };
         // 复制材质，关闭自发光，做成熄灭状态材质
+        /*original.clone()：克隆一份原版发光材质，不能修改原版材质，不然完好的装甲也会变黑；
+        emissive = LinearRgba::BLACK：自发光颜色设为黑色，装甲灯光熄灭；
+        emissive_exposure_weight = 0.0：发光强度归零，彻底关闭夜光效果。 */
         let mut clone = original.clone();
         clone.emissive = LinearRgba::BLACK;
         clone.emissive_exposure_weight = 0.0;
-        // 将新材质存入全局材质库
+        // 将新材质存入全局材质库materials.add(clone)：把改好的熄灭材质放进 Bevy 的全局材质仓库，得到新的材质句柄 muted_handle；
         let muted_handle = materials.add(clone);
-        // 写入缓存
+        // 写入缓存在哈希表 muted 存入映射关系：原材质ID → 熄灭材质句柄，后续再用到直接查表。
         self.muted.insert(id, muted_handle.clone());
-        muted_handle
+        muted_handle//装甲拿到这个句柄，赋值给自己的材质组件，装甲就变黑熄灯。
     }
 }
 
@@ -342,12 +398,34 @@ macro_rules! material {
 }
 
 /// 本模块插件，只初始化材质缓存资源
+ /*过程宏，自动给这个结构体实现 Default trait。
+作用：可以直接写 StatefulAppearancePlugin::default() 创建实例，不用手动写构造函数。 */
 #[derive(Default)]
+/*访问权限控制：
+pub：公开
+pub(super)：只能被当前父模块访问 
+举例：
+src/
+  rm/
+    mod.rs        // 定义 RoboMasterPlugins
+    appearance.rs  // 这里定义 StatefulAppearancePlugin
+StatefulAppearancePlugin 只能被同目录的上级模块 rm 里的代码使用，外部文件夹不能随便引用，防止乱调用插件造成重复加载。*/
+//单元结构体，不带任何成员，纯粹作为插件载体。
 pub(super) struct StatefulAppearancePlugin;
 
+/*实现 Plugin trait，它就成为合法插件，被上层 RoboMasterPlugins 加载。 */
 impl Plugin for StatefulAppearancePlugin {
     fn build(&self, app: &mut App) {
-        // 插入材质缓存资源，全局唯一
+        // 插入材质缓存资源，全局唯一实例
+        /*在全局游戏里创建一个全局单例资源 MaterialCache
+        如果不存在就自动创建一份（调用 MaterialCache::default()）
+        全局全程只会存在唯一一个 MaterialCache。
+        为什么叫 Resource（资源）？
+        Bevy ECS 三大核心：
+        Component 组件：绑定在实体（机器人、装甲）身上，每个实体独有；
+        Resource 资源：全局唯一，整个游戏共用一份（配置、全局缓存、全局计时器）；
+        System 系统：运行的逻辑函数。
+        MaterialCache 材质缓存是全局共用的，所有装甲都要查这个缓存，所以用 Resource。 */
         app.init_resource::<MaterialCache>();
     }
 }
