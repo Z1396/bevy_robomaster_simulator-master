@@ -17,7 +17,7 @@ use crate::statistic::ProjectileStatistics;
 
 /// 观察者回调系统：处理「碰撞结束」事件，判断子弹是否打中装甲、统计有效命中
 /// On<CollisionEnd>：观察者仅在发生 CollisionEnd 碰撞分离事件时执行
-fn handle_armor_collision(
+fn  handle_armor_collision(
     // 本次碰撞结束事件本体
     event: On<CollisionEnd>,
     // ECS指令队列，用来增删实体组件

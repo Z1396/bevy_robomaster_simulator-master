@@ -29,10 +29,18 @@ fn create_help_text(auto_aim: bool, stats: &ProjectileStatistics) -> Text {
 }
 
 /// 【启动时执行一次】在屏幕左下角生成UI文本控件（状态栏）
+ /*Bevy ECS 里最常用的命令队列管理器，可变引用传入系统，用来批量提交 ECS 修改指令。
+Commands 本身不是立刻执行操作，而是收集指令，系统执行完毕后，Bevy 在阶段末尾统一批量执行所有命令。 */
 pub fn spawn_text(commands: &mut Commands) {
     commands.spawn((
         // 初始为空文本，后续由 update_help_text 实时刷新内容
+        /*Text 是 Bevy 内置组件，用来给实体渲染一段文字；
+        Text::new("") = 创建一段空白文本组件。 */
         Text::new(""),
+        /*Node 是 Bevy 引擎原生 2D UI 布局组件，路径：
+        bevy::ui::Node
+        配套布局体系全称：Bevy UI 布局系统，底层封装了 taffy 布局引擎（前端同款 Flex 弹性布局内核，和 CSS Flex 规则几乎一致）。 
+        本质逻辑和网页前端 CSS 布局一模一样，就是用来做游戏界面（血条、文字状态栏、比分、悬浮提示）的 UI 层。*/
         Node {
             position_type: PositionType::Absolute, // 绝对定位，不受相机渲染影响，固定在屏幕角落
             bottom: Val::Px(12.0),                 // 距离屏幕底部 12 像素
