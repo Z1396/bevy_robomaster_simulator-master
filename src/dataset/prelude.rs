@@ -53,11 +53,15 @@ struct Cooldown(Mutex<Timer>);
 pub struct DatasetPlugin;
 impl Plugin for DatasetPlugin {
     /// 构建插件：注册资源与系统。
-    ///
     /// 在 `RenderApp` 中注册 `DatasetHandle`、`Data`、`Cooldown` 资源，
     /// 并添加 `capture` 系统，按冷却时间间隔运行，依赖数字键 1 触发。
     fn build(&self, app: &mut App) {
+        /*- `App` = 主应用（游戏逻辑、ECS 实体、物理、装甲击打）
+        - `RenderApp` = **渲染子应用，独立线程**，负责 GPU 渲染、贴图、画面提取、截图 */
         app.sub_app_mut(RenderApp)
+            /*- `Arc`：多线程共享引用（主 / 渲染子应用跨线程共享）
+            - `Mutex`：互斥锁，保证多线程写文件不会冲突
+            - `DatasetWriter::new("dataset")`：创建数据集写入器，输出目录`dataset/`，保存图片 + 标注 json */
             .insert_resource(DatasetHandle(Arc::new(Mutex::new(
                 DatasetWriter::new("dataset").unwrap(),
             ))))

@@ -76,6 +76,11 @@ impl Default for WindowConfig {
         Self {
             // 默认关闭垂直同步，解除60帧限制
             // 用途：auto-gen 离屏采集时可以跑满帧率加速生成数据集
+            /*mode撕裂帧率上限延迟适用场景
+            `immediate`✅ 有撕裂无上限**最低**离线数据集采集、追求最低响应延迟，能接受撕裂
+            `auto_no_vsync`可能有无上限低Bevy 自动选平台最优无 vsync 模式（你的代码默认）
+            `mailbox`❌ 无撕裂无上限较低推荐仿真交互模式，无撕裂，高帧率，类似 N 卡 FastSync
+            `vsync`(Fifo)❌ 无撕裂锁显示器刷新率高普通游玩，限制帧率，不适合数据集批量生成 */
             present_mode: "auto_no_vsync".to_string(),
         }
     }

@@ -200,9 +200,9 @@ fn render_plugin_for_platform() -> RenderPlugin {
 /// 仅开启 talos 编译特性时生效：判断是否启用Talos采集插件
 /// 规则：ROS2正在采集数据时默认不启动Talos，避免两路采集冲突；环境变量可强制开启
 #[cfg(feature = "talos")]
-fn should_enable_talos_plugin(app: &App) -> bool {
+fn should_enable_talos_plugin(_app: &App) -> bool {
     #[cfg(feature = "ros2")]
-    let ros_capture_active = app
+    let ros_capture_active = _app
         .world()
         .contains_resource::<crate::ros2::capture::RosCaptureContext>();
     #[cfg(not(feature = "ros2"))]
@@ -232,7 +232,8 @@ fn main() {
         let config = SimulationConfig::default();
         // 解析垂直同步配置，非法值兜底关闭垂直同步
         /*- 调用辅助函数 present_mode_from_config ，把字符串（如 "immediate" ）转成 Bevy 的 PresentMode 枚举。
-        - 返回 Option<PresentMode> ，匹配成功就是 Some(...) ，配置非法就是 None,Some 是枚举 Option 的其中一个构造变体，本身是一个单元结构体风格的构造函数。
+        - 返回 Option<PresentMode> ，匹配成功就是 Some(...) ，
+            配置非法就是 None,Some 是枚举 Option 的其中一个构造变体，本身是一个单元结构体风格的构造函数。
         - unwrap_or_else ：成功就取里面的值；失败时执行闭包（打印警告 + 兜底用 AutoNoVsync 关闭垂直同步）。 
         present_mode_from_config 内部逻辑 （前面 136-146 行）：就是一个 match ，
         把 "vsync" / "immediate" / "fifo" 等字符串映射到对应的 PresentMode 枚举值，非法值返回 None 。 */
@@ -298,6 +299,7 @@ fn main() {
         );
         PresentMode::AutoNoVsync
     });
+    //创建一个空的 Bevy 应用实例（ECS 世界 + 调度器）。
     let mut app = App::new();
 
     // 挂载基础插件集：窗口、输入、渲染、音频、事件系统 + 物理引擎
@@ -334,6 +336,8 @@ fn main() {
         对应你配置里 physics.substep_count = 10 物理迭代步数；
         用来实现战车移动、子弹碰撞、装甲碰撞、无人机物理运动。 */
         PhysicsPlugins::default(),
+        // 临时调试：绘制所有碰撞体橙色线框，验证隧道碰撞用完删除此行
+        PhysicsDebugPlugin,
     ));
 
     /*- config.debug.egui 为 true → 加载 Egui（即时模式 GUI 库）。
@@ -369,7 +373,8 @@ fn main() {
         .register_type::<ProjectileStatistics>()
 
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81)) // 开启真实重力 9.81m/s²
-        .insert_resource(SubstepCount(config.physics.substep_count))
+        .insert_resource(SubstepCount(config.physics.substep_count)) // 物理子步迭代次数，对应你配置里 physics.substep_count = 10 物理迭代步数；
+        // 用来实现战车移动、子弹碰撞、装甲碰撞、无人机物理运动。
         // 自瞄全局开关，原子布尔支持多线程安全修改
         /*AtomicBool：普通布尔无法多线程修改，原子布尔支持物理线程、主线程同时读写自瞄开关。 */
         .insert_resource(SubscribeAutoAim(AtomicBool::new(false)))
@@ -387,6 +392,8 @@ fn main() {
         初始化子弹模板、资源预设；
         不会每帧反复运行。
         用途：生成地面、初始化子弹模板、初始化场景静态物体，只做一次场景搭建。 */
+        //setup:我们的初始化系统，用来生成场景、初始化子弹模板、资源预设等
+        //setup_projectile:初始化子弹模板，用来生成子弹实体
         .add_systems(Startup, (setup, setup_projectile))
 
         // 事件观察者：对应事件触发时自动执行函数
@@ -401,7 +408,7 @@ fn main() {
 
         // ====================== 严格划分 Update 阶段顺序，链式串行执行，避免时序错乱 ======================
         // 执行顺序：输入采集 → 游戏逻辑计算 → 相机位置更新 → 垃圾清理
-        /*configure_sets：在 Update 帧阶段定义 4 个系统集合；
+        /*configure_sets：在 Update 帧阶段定义 4 个系统集合`.configure_sets` 用来规定：**A 集合必须在 B 集合前面跑**；
         .chain()：强制串行顺序执行：
         输入采集 → 游戏逻辑 → 更新相机 → 销毁清理
         杜绝时序错乱经典 BUG：
@@ -436,6 +443,7 @@ fn main() {
                     gimbal_controls,//方向键操控云台。
                     remote_gimbal_controls,
                 )
+                //`in_set` = **给系统贴分组标签**，主要用来批量管理调度顺序、批量开关，让调度逻辑集中管理，不用到处写 before/after。
                 .in_set(GameplaySystems::Input),
 
                 // GameLogic阶段：外观切换、UI帮助文本更新
@@ -456,6 +464,7 @@ fn main() {
                     .run_if(|mode: Res<CameraMode>| mode.0 != FollowingType::Free),
                 )
                 .in_set(GameplaySystems::Camera)
+                //意思：**这组相机代码，必须在渲染画面之前跑完**。
                 .before(RenderSystems::Render),
 
                 // Cleanup阶段：过期子弹销毁、F2截图触发、截图异步保存
@@ -482,8 +491,15 @@ fn main() {
         TransformSystems::Propagate：父实体坐标同步传播到所有子实体（战车→云台→枪口的坐标同步）。 */
         .add_systems(
             PostUpdate,   //Update 之后、渲染之前的阶段。
-            update_chassis_observation.after(TransformSystems::Propagate),
             //TransformSystems::Propagate ：Bevy 自带系统，把父实体的 Transform 传播到子实体的 GlobalTransform（场景树坐标更新）。
+            update_chassis_observation.after(TransformSystems::Propagate),
+            /*1. **`update_chassis_observation`**
+            你的自定义系统：读取底盘当前的位姿，输出观测数据（给算法 / ROS 用）。
+            2. **`.after(TransformSystems::Propagate)`**`Propagate` 是 Bevy 原生系统：**把父物体的平移旋转缩放，
+            传递给所有子物体，刷新子物体的`GlobalTransform`世界坐标**。
+
+            `.after(...)` 代表：**必须等坐标传播计算全部做完，才运行`update_chassis_observation`**。 */
+            
         )
 
         // 空格键发射子弹：必须等待Transform传播完成，才能拿到机甲最新世界坐标生成子弹

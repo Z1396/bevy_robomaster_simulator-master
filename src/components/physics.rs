@@ -42,7 +42,7 @@ pub struct ProjectileSetting(pub Handle<Mesh>, pub Handle<StandardMaterial>);
 /// 给载具使用，可按名称配置车身不同部位碰撞体（炮塔、底盘、装甲、炮管等）
 #[derive(Component, Deref, DerefMut)]
 pub struct PreciousCollision(
-    pub  HashMap<
+    pub HashMap<
         // Key：碰撞部位名称，例如 "chassis"(底盘)、"turret"(炮塔)、"barrel"(炮管)
         String,
         // Value：单个碰撞体完整配置组

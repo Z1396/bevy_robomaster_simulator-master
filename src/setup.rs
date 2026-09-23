@@ -46,6 +46,7 @@ pub struct ScanOutpost;
 
 /// 场景入口初始化系统：世界光照、地面场景、基地、前哨、机器人、主相机全部在此生成
 pub fn setup(
+    // 命令系统：用于生成实体、添加组件、设置变换等操作把东西放进world
     mut commands: Commands,
     /*1. Res<T>
     Bevy 资源专用包裹类型，代表只读访问全局资源；
@@ -85,6 +86,8 @@ pub fn setup(
             ..default()
         },
         // 光源位置 + 朝向
+        /*⚠️ 平行光**位置本身不影响光照！**平行光只关心方向，放哪里光线都是平行的。
+        这里把光源放在 (0,4,0) 只是方便理解，真正起作用的是 `looking_at` 算出的光线方向。 */
         Transform::from_xyz(0.0, 4.0, 0.0)
             // 看向世界坐标原点 (0,0,0)
             .looking_at(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)),
@@ -93,10 +96,10 @@ pub fn setup(
     // ===================== 环境碰撞分层规则 =====================
     // 环境碰撞层：自身归属环境层，可以被 地面、己方车辆、敌方车辆、敌我子弹 碰撞检测到
     // 定义环境（地面、场景墙体、静态场地）的碰撞层级规则
-    /*CollisionLayers 格式规则（Bevy Rapier 物理引擎标准）
-    CollisionLayers::new(自身归属层数组, 允许碰撞的层级数组)
-    归属层：这个碰撞体打上什么标签；此处地面、场地都归类为 Environment 环境层。
-    碰撞过滤层：只和列表内的层级产生碰撞，不在列表里的物体互相穿透、互不碰撞。 */
+    /*
+    Avian3D 的 `CollisionLayers::new(membership_mask, filter_mask)` 规则：
+    > `membership_mask`：**我是谁**（这个碰撞体归属的层，可以多个）
+    > `filter_mask`：**我能和谁碰撞**（只要对方的 membership 在我的 filter 里面，双方就会产生碰撞） */
     let layer_env = CollisionLayers::new(
         // 第一层：自身所属层级 → 当前碰撞体属于【环境层 Environment】
         [GameLayer::Environment],
@@ -112,13 +115,31 @@ pub fn setup(
 
     // 闭包，延迟构造碰撞生成器，专门给地面、静态场景生成高精度碰撞体
     /*|| { ... } 无参闭包
-    延迟创建构造器，后续给场景实体挂载组件时再执行构造逻辑。
-    ColliderConstructorHierarchy
-    Rapier 配套工具组件：读取物体的模型网格（Mesh），自动生成碰撞体，不用手动配盒子、球体碰撞体。
-    TrimeshFromMeshWithConfig(TrimeshFlags::all())
-    TrimeshFromMesh：三角网格碰撞，碰撞形状完全贴合 3D 模型外表；
-    和简易碰撞体（立方体、球体胶囊体）区别：地面凹凸、台阶、墙体不规则轮廓都能精准碰撞；
-    TrimeshFlags::all()：开启三角网格全部安全配置（防止畸形网格造成物理崩溃）。 */
+    这个闭包就是：**一个现成的 “生成规则”，等加载 GLB 机甲模型的时候，自动照着模型的三角面片，给模型生成贴合外形的三角网格碰撞体。**
+    它本身不会立刻干活，只是存好这套规则，模型加载完成后才执行。 */
+    /*### 1. `ColliderConstructorHierarchy`
+
+    作用：**遍历模型所有子节点（子网格）**。
+    你的机甲 GLB 里面是分层的：底盘、云台、装甲片都是分开的子模型。这个组件会挨个找到每一个子网格，给每一部分都生成碰撞体，不是只处理模型根节点。
+
+    ### 2. `ColliderConstructor::TrimeshFromMeshWithConfig(...)`
+
+    意思：**拿模型自带的原始三角面片，生成三角网格碰撞体，并且可以带配置参数**。
+    `TrimeshFromMesh` 是不带配置的简化版本；`TrimeshFromMeshWithConfig` 允许传入三角网格的标志位。
+
+    ### 3. `TrimeshFlags::all()`
+
+    `all()` = 把所有可用开关全部打开。Avian 里 TrimeshFlags 一共这几项：
+
+    - `BACKFACE_CULLING`：背面剔除。三角形只有正面参与碰撞检测，背面不产生碰撞。比如模型内壁，子弹穿进去不会触发碰撞。
+    - `COMPUTE_AABB`：预计算包围盒。提前算出这片三角网格的整体包围盒，加速碰撞粗筛，减少计算量。
+    - `CONSERVATIVE`：保守碰撞检测，防止微小模型缝隙造成穿透。
+
+    ### 4. 外层闭包 `|| { ... }`
+
+    闭包在这里是**延迟构造**。
+    不是程序启动立刻生成碰撞体。等 GLB 模型资源加载完成后，引擎才会执行这个闭包，读取已经加载好的网格数据生成碰撞。
+    模型还没加载的时候，网格数据不存在，不能提前生成碰撞体，所以用闭包延迟。 */
     let trimesh = || {
         ColliderConstructorHierarchy::new(
             // 根据模型原始网格，自动生成三角面碰撞体
@@ -128,6 +149,9 @@ pub fn setup(
 
     // 闭包：生成【体素填充碰撞体】，适合镂空能量机关，避免内部空腔无法碰撞
     // 接收 size（体素尺寸，单位米）作为入参，返回一套「体素化三角碰撞生成规则」
+    /*举例子：机甲装甲外壳是空心的模型。
+    - 普通 Trimesh 三角网格：只有外壳一层薄三角面，**壳里面是空的**，子弹有可能穿过壳体进到模型内部。
+    - 体素化 + 洪水填充开`detect_cavities`：引擎识别到装甲这个封闭空心区域，把装甲内部全部填满小方块。子弹打到装甲外壳就挡住，不会钻进模型空腔。 */
     let voxel = |size| {
         ColliderConstructorHierarchy::new(
             ColliderConstructor::VoxelizedTrimeshFromMesh {
@@ -150,9 +174,9 @@ pub fn setup(
             // 只对模型内部名称叫 GROUND_DENSE 的子物体生效碰撞规则
             "GROUND_DENSE".to_string(),
             (
-                trimesh(),        // 使用原版高精度三角网格碰撞
+                trimesh(),        // 使用原版高精度三角网格碰撞体
                 layer_env,        // 复用环境碰撞层级（地面能被机甲、子弹碰撞）
-                Visibility::Visible,
+                Visibility::Visible,//
                 Some(RigidBody::Static), // 静态刚体，固定不动，不会被机器人撞动
             ),
         )])),
@@ -312,7 +336,9 @@ pub fn setup_ground(
     // 触发条件：某个场景实体完成加载实例化事件 SceneInstanceReady
     events: On<SceneInstanceReady>,
     mut commands: Commands,
+    //查询实体的子节点，用来递归遍历所有子物体。`iter_descendants` = 把所有子、孙物体全部遍历一遍。
     children: Query<&Children>,
+    //查询实体的名字（GLB 模型里面子物体的名字）。
     name: Query<&Name>,
     // 查询全局唯一带有 ScanOutpost 组件的实体（前哨站根物体）
     ground: Single<Entity, With<ScanOutpost>>,

@@ -10,7 +10,6 @@ use crate::components::{
     InfantryChassis,           // 底盘组件
     InfantryGimbal,            // 云台组件，获取炮管朝向
     InfantryLaunchOffset,     // 无人机发射挂载点（炮管前端坐标偏移）
-    ProjectileCooldown,        // 发射冷却组件（本段暂未使用）
 };
 
 /// 无人机发射系统：按下 P 键，从战车炮口位置生成无人机场景模型
@@ -36,7 +35,7 @@ pub fn uav_launch(
     keyboard: Res<ButtonInput<KeyCode>>, // 键盘输入资源
 ) {
     // 初始化冷却计时器：首次运行创建 1s 一次性定时器
-    let mut timer = timer.get_or_insert(Timer::from_seconds(1.0, TimerMode::Once));
+    let timer = timer.get_or_insert(Timer::from_seconds(1.0, TimerMode::Once));
     // 推进计时器时间
     timer.tick(time.delta());
 

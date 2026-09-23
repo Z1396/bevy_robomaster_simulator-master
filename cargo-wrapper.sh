@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/bin/bash
 
 autoload -U colors && colors
 RED=$(print -P "%F{red}")

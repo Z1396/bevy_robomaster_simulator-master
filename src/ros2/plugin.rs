@@ -10,7 +10,6 @@
 //   6. 在 AppExit 时安全停止 ROS2 线程，保证资源释放
 // ============================================================================
 
-use crate::arc_mutex;
 use crate::capture::CaptureSource;
 use crate::capture::driver::{CaptureConfig, CapturedFrameKind};
 use crate::components::{
@@ -569,8 +568,8 @@ impl Plugin for ROS2Plugin {
             .remove_resource::<TopicPublisher<LivoxPointCloudTopic>>()
             .unwrap();
 
-        // 创建 ROS2 时钟（基于系统时间）
-        let clock = arc_mutex!(Clock::create(SystemTime).unwrap());
+        // 创建 ROS2 时钟（基于系统时间），包裹为 Arc<Mutex> 供多线程共享
+        let clock = Arc::new(Mutex::new(Clock::create(SystemTime).unwrap()));
         // 计算相机垂直 FOV（弧度）
         let fov_y = sim_config.camera.fov.to_radians();
         // 彩色相机捕获配置：RGB8 格式

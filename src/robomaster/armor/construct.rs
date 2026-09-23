@@ -145,6 +145,7 @@ impl Side {
 /// 装甲构造器系统参数
 /// #[derive(SystemParam)]：把多个查询、资源打包成一个参数，简化系统入参
 /// 封装装甲构建全过程需要的所有ECS工具：命令、层级查询、网格资源等
+/// `'w` 世界生命周期，`'s` 系统生命周期。
 #[derive(SystemParam)]
 pub struct ArmorConstructor<'w, 's> {
     /// ECS指令队列：新增组件、删除实体、修改实体属性
@@ -454,33 +455,17 @@ pub fn extract_vertices(mesh: &Mesh) -> Option<Vec<Vec3>> {
 /// 装甲初始化系统
 /// 触发规则：仅当某个实体**刚刚新增 ScanArmor 组件的那一帧**运行一次，装甲只会被构建一次，不会反复重复构建
 fn insert(
-    /*1. Added<ScanArmor>
-    生命周期筛选器：只有实体在当前帧刚刚挂上 ScanArmor 时，才会被查询命中。
-    作用：装甲只会自动构建 1 次，后续帧不会重复执行构造逻辑，避免重复生成碰撞体、重复插入组件引发 bug。
-    2. Read<ScanArmor>
-    只读借用，只读取阵营、装甲规格，不会修改该组件。
-    3. mut constructor: ArmorConstructor
-    ArmorConstructor 是 #[derive(SystemParam)] 封装的工具包，内部包含 Commands，需要修改场景实体（加组件、删灯带、生成碰撞体），因此必须加 mut。 */
-    // 查询约束：拿到实体ID + 只读 ScanArmor 组件，只匹配「本帧新增了ScanArmor」的实体
-    /*Bevy Query 模板格式：
-    Query<返回内容, 筛选条件>
-    第 1 个泛型：想要从实体上拿到什么数据；
-    第 2 个泛型：实体必须满足的组件过滤器。
-    2. 第一部分：(Entity, Read<ScanArmor>) 读取内容
-    元组，表示每条查询结果包含两个值：
-    Entity：实体唯一 ID，用来后续操作这个实体；
-    Read<ScanArmor>：只读获取 ScanArmor 组件。
-    Read<T>：只读借用，不会触发 Changed<T> 变更标记，性能更好；
-    只读取装甲所属阵营 team、装甲规格 spec，不会修改这个组件。
-    如果写成 ScanArmor 不带 Read，等价 &mut ScanArmor 可变引用，会额外标记组件发生修改，没必要。
-    3. 第二部分过滤器：Added<ScanArmor>
-    生命周期过滤器，核心作用：
-    仅当实体在当前游戏帧刚刚插入了 ScanArmor 组件时，该实体才会被查询匹配到。 */
+    /*1. `(Entity, Read<ScanArmor>)`：拿到实体 ID + **只读**读取`ScanArmor`（阵营、装甲参数，不修改）
+    2. `Added<ScanArmor>`：只匹配**本帧刚添加 ScanArmor 的实体**，只执行一次，防止重复创建碰撞体 / 组件。
+    3. `mut constructor: ArmorConstructor`：`ArmorConstructor`是`SystemParam`，需要`mut`才能用 Commands 增删实体、组件。 */
     root: Query<(Entity, Read<ScanArmor>), Added<ScanArmor>>,
     // 打包好的装甲构造工具集（封装 Commands、层级查询、网格资源等 SystemParam），可变因为内部要新增组件、生成碰撞体
     mut constructor: ArmorConstructor,
 ) {
     // 循环遍历所有本帧刚挂载 ScanArmor 的顶层父实体（机器人根物体）
+    /*- `iter_descendants`：**递归遍历所有后代**，不管嵌套多少层子物体，不用手动多层循环
+    - `filter_map`：**边查询边过滤**，拿不到 Name / 名字不匹配 ARMOR_ROOT 直接丢弃
+    - `Added<ScanArmor>`保证整套扫描**只执行一次**，不会每帧重复扫描、重复生成碰撞体造成 bug */
     for (root_entity, armor_data) in root.iter() {
         // 解构取出构造器内的子物体查询、名称查询，简化后续书写
         let children = constructor.children;
