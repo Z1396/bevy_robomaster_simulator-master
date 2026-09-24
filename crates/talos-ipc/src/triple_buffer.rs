@@ -1,42 +1,38 @@
 //! Lock-free triple-buffer implementation for single-producer single-consumer IPC
 //!
-//! Provides a wait-free, single-producer single-consumer triple buffer that
-//! uses atomics for synchronization. The producer writes to the current write
-//! slot, then atomically swaps the state to signal availability. The consumer
-//! reads the latest ready slot and clears the new-data flag.
+//! 无锁三缓冲实现，用于**单生产者单消费者(SPSC)**跨进程IPC
+//! 使用原子变量完成同步，无mutex、无自旋等待（wait-free）。
 //!
-//! The state encoding uses the highest bit as a FLAG_NEW indicator and the
-//! lower 2 bits as the index of the ready slot (0, 1, 2).
-
+//! 生产者：向当前写槽写入数据，然后原子交换共享状态，标记新帧就绪。
+//! 消费者：读取最新就绪槽，并清除新数据标记。
+//!
+//! 状态编码规则：
+//! 最高bit：FLAG_NEW 新数据标记
+//! 低2bit：就绪槽索引（取值0/1/2）
 use crate::layout::{FLAG_NEW, INDEX_MASK};
 use std::sync::atomic::Ordering;
 
-/// Lock-free triple-buffer producer
+/// 无锁三缓冲：生产者端
 ///
-/// Writes data to the current write slot and publishes it by atomically
-/// swapping the shared state byte. The producer holds a mutable reference to
-/// the write index, so only one producer may exist at a time.
+/// 写入当前写槽，通过原子交换共享状态来对外发布新帧。
+/// 生产者独占持有 write_idx，同一时刻只能存在一个生产者实例。
 ///
 /// # Safety
-///
-/// The caller must ensure that at most one `TripleBufferProducer` exists for
-/// a given triple buffer at any time.
+/// 调用方必须保证：同一个三缓冲实例，**最多只能存在一个TripleBufferProducer**。
 pub struct TripleBufferProducer<'a, S> {
-    /// Shared atomic state byte (FLAG_NEW | ready_index)
+    /// 共享原子状态字节：FLAG_NEW(高位) | ready_slot_index(低2bit)
     state: &'a std::sync::atomic::AtomicU8,
-    /// Index of the slot the producer should write to next
+    /// 生产者下一次要写入的槽索引
     write_idx: &'a mut u8,
-    /// Three data slots
+    /// 三块数据缓冲区槽位 [slot0, slot1, slot2]
     slots: &'a mut [S; 3],
 }
 
 impl<'a, S> TripleBufferProducer<'a, S> {
-    /// Create a new producer
+    /// 构造生产者实例
     ///
     /// # Safety
-    ///
-    /// The caller must ensure that only one producer exists for this buffer.
-    /// Concurrent producers will cause data races on `write_idx`.
+    /// 调用方保证全局唯一生产者；多个生产者会在 write_idx 上产生数据竞争。
     pub unsafe fn new(
         state: &'a std::sync::atomic::AtomicU8,
         write_idx: &'a mut u8,
@@ -49,53 +45,48 @@ impl<'a, S> TripleBufferProducer<'a, S> {
         }
     }
 
-    /// Get a mutable reference to the current write slot
+    /// 获取当前写槽的可变引用，用来填充帧数据
     pub fn borrow_mut(&mut self) -> &mut S {
         &mut self.slots[*self.write_idx as usize]
     }
 
-    /// Publish the current write slot
+    /// 发布当前写槽的数据（核心逻辑）
     ///
-    /// Atomically swaps the state byte to `write_idx | FLAG_NEW`, which
-    /// simultaneously marks the data as new and records which slot is ready.
-    /// The old state's index (lower 2 bits) becomes the next write index,
-    /// ensuring the producer never overwrites the slot the consumer is reading.
+    /// 原子swap：把 `write_idx | FLAG_NEW` 存入共享state，
+    /// 旧state的值作为返回值，旧state低2bit就是**下一个安全的写槽索引**。
+    /// 保证生产者永远不会覆盖消费者正在读取的槽。
     pub fn publish(&mut self) {
-        // Swap: write_idx|FLAG_NEW into state, old state value becomes new write_idx
+        // AcqRel：写发布 + 同步，保证前面内存写入（图像数据）先于state更新
         let old = self
             .state
             .swap(*self.write_idx | FLAG_NEW, Ordering::AcqRel);
-        // The old state's slot index (lower 2 bits) is now safe to write to
+
+        // old的低2bit = 旧就绪槽索引，这个槽现在空闲，可以拿来写下一帧
         *self.write_idx = old & INDEX_MASK;
     }
 }
 
-/// Lock-free triple-buffer consumer
+/// 无锁三缓冲：消费者端
 ///
-/// Reads the latest published slot by attempting a CAS on the shared state
-/// byte to clear the FLAG_NEW flag. If the CAS succeeds, the consumer has
-/// exclusive access to the slot until the next publish.
+/// 通过CAS尝试清除FLAG_NEW标记，读取最新发布的槽。
+/// CAS成功后，消费者独占该槽直到下一次publish。
 ///
 /// # Safety
-///
-/// The caller must ensure that at most one `TripleBufferConsumer` exists for
-/// a given triple buffer at any time.
+/// 调用方必须保证同一个三缓冲**最多只能存在一个消费者**。
 pub struct TripleBufferConsumer<'a, S> {
-    /// Shared atomic state byte (FLAG_NEW | ready_index)
+    /// 共享原子状态字节：FLAG_NEW | ready_index
     state: &'a std::sync::atomic::AtomicU8,
-    /// Index of the slot the consumer last read
+    /// 消费者上一次成功读取的槽索引
     read_idx: &'a mut u8,
-    /// Three data slots (immutable references for reading)
+    /// 三块只读槽位，消费者只读不写
     slots: &'a [S; 3],
 }
 
 impl<'a, S> TripleBufferConsumer<'a, S> {
-    /// Create a new consumer
+    /// 构造消费者实例
     ///
     /// # Safety
-    ///
-    /// The caller must ensure that only one consumer exists for this buffer.
-    /// Concurrent consumers will cause data races on `read_idx`.
+    /// 调用方保证全局唯一消费者；多个消费者会在 read_idx 产生数据竞争。
     pub unsafe fn new(
         state: &'a std::sync::atomic::AtomicU8,
         read_idx: &'a mut u8,
@@ -108,26 +99,26 @@ impl<'a, S> TripleBufferConsumer<'a, S> {
         }
     }
 
-    /// Try to borrow the latest published slot
+    /// 尝试获取最新就绪帧
     ///
-    /// If new data is available (FLAG_NEW is set), attempts to CAS the state
-    /// from `(ready_idx | FLAG_NEW)` to `read_idx` (clearing the flag). On
-    /// success, updates `read_idx` and returns `Some(&S)`. If the CAS fails
-    /// (e.g., the producer just published a newer frame), retries once.
+    /// 逻辑：
+    /// 1. load state，判断FLAG_NEW是否置位，没有新数据直接返回None
+    /// 2. CAS：把 state 从 `ready_idx | FLAG_NEW` 替换成旧read_idx（清除FLAG_NEW）
+    /// 3. CAS成功：更新read_idx，返回对应槽的引用
+    /// 4. CAS失败：说明生产者在load和CAS之间publish了更新的帧，重试一次
+    /// 最多重试1次，两次失败直接返回None，不阻塞。
     ///
-    /// Returns `None` if no new data is available or if the CAS fails twice.
+    /// 返回 Some(&S) 拿到最新帧；None表示无新帧/抢帧失败
     pub fn borrow(&mut self) -> Option<&S> {
         let mut expected = self.state.load(Ordering::Acquire);
-
-        // No new data available
+        // 没有新数据标记，直接返回
         if (expected & FLAG_NEW) == 0 {
             return None;
         }
-
         let mut ready_idx = expected & INDEX_MASK;
         let mut desired = *self.read_idx;
 
-        // First CAS attempt: clear FLAG_NEW, set state to old read_idx
+        // 第一次CAS尝试
         match self.state.compare_exchange_weak(
             expected,
             desired,
@@ -135,11 +126,12 @@ impl<'a, S> TripleBufferConsumer<'a, S> {
             Ordering::Acquire,
         ) {
             Ok(_) => {
+                // CAS成功，抢占到该帧
                 *self.read_idx = ready_idx;
                 Some(&self.slots[ready_idx as usize])
             }
             Err(new_expected) => {
-                // Producer published another frame between our load and CAS
+                // CAS失败：state被生产者更新了，读取新的state，重试一次
                 expected = new_expected;
                 if (expected & FLAG_NEW) == 0 {
                     return None;
@@ -147,7 +139,7 @@ impl<'a, S> TripleBufferConsumer<'a, S> {
                 ready_idx = expected & INDEX_MASK;
                 desired = *self.read_idx;
 
-                // Second (and final) CAS attempt
+                // 第二次（最后一次）CAS尝试
                 match self.state.compare_exchange_weak(
                     expected,
                     desired,
@@ -158,16 +150,14 @@ impl<'a, S> TripleBufferConsumer<'a, S> {
                         *self.read_idx = ready_idx;
                         Some(&self.slots[ready_idx as usize])
                     }
-                    Err(_) => None,
+                    Err(_) => None, // 两次都失败，放弃，等待下一轮poll
                 }
             }
         }
     }
 
-    /// Check if new data is available without consuming it
-    ///
-    /// This is useful for non-blocking polling of data availability.
-    /// Returns `true` if a call to `borrow()` would return `Some(_)`.
+    /// 仅查询是否存在新数据，**不消费**帧
+    /// 用于非阻塞轮询判断，borrow才会真正取走帧
     #[must_use]
     #[allow(dead_code)]
     pub fn has_new_data(&self) -> bool {

@@ -285,6 +285,15 @@ pub fn setup(
         ActiveSlapper,
     ));
 
+    // 测试模型 test.glb：蓝方备用战车，Tab 切换后 IJKL/UO 操控
+    // 不挂 Controlled：Controlled 全局只允许一台（Single 查询），否则界面查询 panic
+    commands.spawn((
+        SceneRoot(asset_server.load("test.glb#Scene0")),
+        Transform::from_xyz(-2.0, 1.0, -2.0),
+        Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
+        SlapperInfantry,
+    ));
+
     // ===================== 主相机生成 =====================
     // 生成主3D相机实体
     let mut main_camera = commands.spawn((
@@ -462,13 +471,10 @@ pub fn setup_vehicle(
 
         // 复合碰撞体：机器人整体碰撞外形 = 圆柱体胶囊，贴合战车外形，性能远优于三角网格碰撞
         Collider::compound(vec![(
-            // 碰撞体相对机器人中心的偏移
-            Vec3::new(0.0, -0.115649, 0.0),
-            Quat::IDENTITY,
-            // 圆柱体：半径0.259m，高度0.231m，模拟战车底盘轮廓
-            Collider::cylinder(0.2593615, 0.231298),
-        )]),
-
+            Vec3::new(0.0, 0.0, 0.0),          // 圆柱中心相对模型原点的偏移
+            Quat::IDENTITY,                           // 不旋转
+            Collider::cylinder(0.3623615, 0.2180),  // (半径, 总高度)
+        )]),          
         CollisionMargin(0.005), // 碰撞体向外扩充5mm安全余量，防止高速行驶时机器人卡在墙体缝隙里
         vehicle_collision_layers,// 绑定上面定义的碰撞层级规则
         Mass(15.0),             // 机器人整体质量 15kg，匹配RM步兵机器人重量
