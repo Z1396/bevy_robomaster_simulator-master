@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use crate::components::{ActiveSlapper, Spinning};
 
 /// 纯展示战车自转角速度（rad/s），约 5 秒转一圈
-const SPIN_ANGULAR_SPEED: f32 = 5.0;
+const SPIN_ANGULAR_SPEED: f32 = 2.0;
 
 /// setup_vehicle 给根刚体配置的角阻尼值，停转时恢复，防止车身自转、侧翻、抖动
 const VEHICLE_ANGULAR_DAMPING: f32 = 50.0;
