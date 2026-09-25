@@ -280,17 +280,19 @@ pub fn setup(
     // AI蓝方英雄机器人，具备主动击打权限
     commands.spawn((
         SceneRoot(asset_server.load("HERO.glb#Scene0")),
-        Transform::from_xyz(2.0, 1.0, 1.0),
+        Transform::from_xyz(7.0, 1.0, 2.0),
         Infantry::new(Team::Blue, HERO_ROBOT_CONFIG),
         SlapperInfantry,
         ActiveSlapper,
     ));
 
-    // 测试模型 test.glb：蓝方纯展示战车
-    // 不挂 Controlled / SlapperInfantry：不参与任何操控与 Tab 轮换，只挂 Spinning 持续自转
+    // 测试模型 test.glb：蓝方展示战车，双形态自动切换
+    // 挂 SlapperInfantry：参与 Tab 轮换，选中后可被 IJKL/UO 操控
+    // 挂 Spinning：未被 Tab 选中时持续自转展示，选中操控时自动停转（见 spin.rs）
+    // 不挂 Controlled：Controlled 全局只允许一台（Single 查询），否则界面查询 panic
     commands.spawn((
         SceneRoot(asset_server.load("test.glb#Scene0")),
-        Transform::from_xyz(-2.0, 1.0, -2.0),
+        Transform::from_xyz(-7.0, 2.0, -5.0),
         Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
         Spinning, SlapperInfantry,
     ));
