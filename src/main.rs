@@ -93,6 +93,7 @@ use crate::systems::{
     screenshot_on_f2,               // F2快捷键手动截图
     screenshot_saving,              // 截图落地保存逻辑，配合数据集模块打标签
     setup_projectile,               // 子弹实体初始化，挂载刚体、碰撞、冷却组件
+    spin_display_vehicle,           // 纯展示战车出生点持续自转
     switch_slapper_control,         // 哨兵/飞镖机构控制切换
     uav_launch,                     // 无人机投放系统（RM无人机投掷弹丸逻辑）
     update_chassis_observation,     // 刷新底盘观测数据供给AI感知
@@ -337,7 +338,7 @@ fn main() {
         用来实现战车移动、子弹碰撞、装甲碰撞、无人机物理运动。 */
         PhysicsPlugins::default(),
         // 临时调试：绘制所有碰撞体橙色线框，验证隧道碰撞用完删除此行
-        PhysicsDebugPlugin,
+        //PhysicsDebugPlugin,
     ));
 
     /*- config.debug.egui 为 true → 加载 Egui（即时模式 GUI 库）。
@@ -449,7 +450,9 @@ fn main() {
                 // GameLogic阶段：外观切换、UI帮助文本更新
                 //- change_appearance ：Shift+C 切换装甲外观。
                 //- update_help_text ：刷新左下角帮助文字。
-                (change_appearance, update_help_text).in_set(GameplaySystems::GameLogic),
+                //- spin_display_vehicle ：纯展示战车在出生点持续自转。
+                (change_appearance, update_help_text, spin_display_vehicle)
+                    .in_set(GameplaySystems::GameLogic),
 
                 // Camera阶段：更新相机位置，必须在渲染之前执行
                 (

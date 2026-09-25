@@ -376,7 +376,7 @@ impl Default for SimulationConfig {
                 physics: PhysicsConfig {
                     // 物理子步数：每帧画面执行10轮物理迭代计算
                     // 数值越大物理碰撞、弹道模拟越精准，但是CPU开销越高；机器人仿真常用8~15
-                    substep_count: 10,
+                    substep_count: 8,
                 },
 
                 // 底盘+云台整车运动参数配置

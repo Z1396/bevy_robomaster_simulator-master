@@ -336,7 +336,7 @@ pub fn switch_slapper_control(
     // 查询当前正在激活操控的备用战车根实体
     active_root: Query<Entity, (With<Infantry>, With<SlapperInfantry>, With<ActiveSlapper>)>,
 ) {
-    // Tab刚按下瞬间执行一次，按住不重复
+    // Tab刚按下瞬间执行一次，按住不重复执行
     if !keyboard.just_pressed(KeyCode::Tab) {
         return;
     }

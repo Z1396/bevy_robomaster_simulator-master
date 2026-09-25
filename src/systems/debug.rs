@@ -18,11 +18,11 @@ use crate::statistic::ProjectileStatistics;
 fn create_help_text(auto_aim: bool, stats: &ProjectileStatistics) -> Text {
     format!(
         // 自瞄开关状态、总发射子弹数、命中装甲数量、命中率百分比
-        "auto-aim={} total={} accurate={} pct={:.2}\nControls: F2-Screenshot F3-Change Camera | WASD-Move Mouse-Look Space-Shoot",
+        "auto-aim={} total={} accurate={} pct={:.1}%\nControls: F2-Screenshot F3-Change Camera | WASD-Move Mouse-Look Space-Shoot",
         if auto_aim { "ON " } else { "OFF" },
         stats.launch_count,    // 总发射子弹数量
         stats.accurate_count,  // 命中有效装甲数量
-        stats.accurate_pct()   // 命中率 = 命中数 / 总发射数，保留2位小数
+        stats.accurate_pct() * 100.0   // 命中率 = 命中数 / 总发射数，转为百分比
     )
     // 将字符串转为 Bevy 的 Text UI 文本对象
     .into()

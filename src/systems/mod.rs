@@ -4,6 +4,7 @@ mod chassis_observation;    // 底盘观测模块：观测战车姿态、位姿�
 mod debug;                 // 调试模块：绘制调试线条、碰撞框、弹道、坐标、打印日志等调试功能
 mod input;                 // 输入控制系统模块：刚刚注释的战车操控、云台控制、按键切换逻辑全部放在此处
 mod projectile;            // 弹丸模块：子弹发射、弹道物理、碰撞判定、伤害逻辑
+mod spin;                  // 纯展示战车模块：出生点持续自转
 mod uav;                   // 无人机模块（无人机视角、飞行控制、侦察等扩展功能）
 
 // 将各个子模块的公开内容导出到当前作用域，外部文件 use 本模块时可直接使用，不用再逐层嵌套
@@ -12,6 +13,7 @@ pub use chassis_observation::*;
 pub use debug::*;
 pub use input::*;
 pub use projectile::*;
+pub use spin::*;
 pub use uav::*;
 
 use bevy::prelude::*;

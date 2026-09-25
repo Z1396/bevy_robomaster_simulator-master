@@ -80,13 +80,15 @@ pub fn projectile_launch(
     stats.increase_launch();
 
     // 计算炮口朝前的发射方向向量
-    // gimbal.0.rotation()：云台在世界中的旋转四元数
-    // launch_offset.rotation：炮口自身额外旋转修正
-    // mul_vec3(Vec3::Y)：以局部Y轴作为炮口朝前方向
-    // normalize_or_zero：归一化方向向量；如果是零向量直接返回零防止除以0
-    let direction = (gimbal.0.rotation() * launch_offset.rotation)
-        .mul_vec3(Vec3::Y)
-        .normalize_or_zero();
+    // 直接复用第一人称相机（准星）的旋转，保证弹道与视线严格对齐：
+    // 相机旋转 = 云台世界旋转 × 炮口节点局部旋转 × Z轴90°Bevy朝向修正（与 camera.rs 保持一致）
+    // 不能再单独用炮口节点局部 +Y：该轴与相机视线垂直，
+    // 云台水平时视线朝前而子弹恒上扬25°，打出来就是抛物弹道
+    let camera_rotation = gimbal.0.rotation()
+        * launch_offset.rotation
+        * Quat::from_euler(EulerRot::ZYX, 0.0, 0.0, PI / 2.0);
+    // 视线方向 = 旋转后的局部 -Z 轴，归一化防止零向量
+    let direction = camera_rotation.mul_vec3(Vec3::NEG_Z).normalize_or_zero();
 
     // 方向向量无效，不生成子弹
     if direction == Vec3::ZERO {

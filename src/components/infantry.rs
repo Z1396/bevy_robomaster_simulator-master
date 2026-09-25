@@ -57,3 +57,8 @@ pub struct SlapperInfantry;
 /// 全局只会有1个实体同时拥有 ActiveSlapper，用来切换操控目标
 #[derive(Component)]
 pub struct ActiveSlapper;
+
+/// 标记组件：纯展示型战车
+/// 出生在固定位置后绕竖直轴持续自转，不参与任何操控逻辑
+#[derive(Component)]
+pub struct Spinning;

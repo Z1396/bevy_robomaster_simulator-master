@@ -25,6 +25,7 @@ use crate::components::{
     MainCamera,           // 主跟随相机标记
     PreciousCollision,    // 场景碰撞配置容器：子物体名称 → 碰撞规则
     SlapperInfantry,      // AI自动击打敌方的机器人标记
+    Spinning,             // 纯展示战车标记：出生点持续自转
 };
 // 全局仿真配置
 use crate::config::SimulationConfig;
@@ -285,13 +286,13 @@ pub fn setup(
         ActiveSlapper,
     ));
 
-    // 测试模型 test.glb：蓝方备用战车，Tab 切换后 IJKL/UO 操控
-    // 不挂 Controlled：Controlled 全局只允许一台（Single 查询），否则界面查询 panic
+    // 测试模型 test.glb：蓝方纯展示战车
+    // 不挂 Controlled / SlapperInfantry：不参与任何操控与 Tab 轮换，只挂 Spinning 持续自转
     commands.spawn((
         SceneRoot(asset_server.load("test.glb#Scene0")),
         Transform::from_xyz(-2.0, 1.0, -2.0),
         Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
-        SlapperInfantry,
+        Spinning, SlapperInfantry,
     ));
 
     // ===================== 主相机生成 =====================
@@ -393,6 +394,7 @@ pub fn setup_vehicle(
         &Infantry,
         Option<&Controlled>,
         Option<&ActiveSlapper>,
+        Option<&Spinning>,
     )>,
     // 未使用的查询占位，用来规避 Bevy 未使用参数编译警告，无业务作用
     _secondary_query: Query<&ChildOf, (Without<Infantry>, Without<SceneInstance>)>,
@@ -409,16 +411,16 @@ pub fn setup_vehicle(
         return;
     }
 
-    // 解包根实体数据：实体ID、机器人属性、是否玩家操控、是否进攻型AI
-    let (root, infantry, is_local_ctrl, has_active_slapper) = root_query.get(root).unwrap();
+    // 解包根实体数据：实体ID、机器人属性、是否玩家操控、是否进攻型AI、是否纯展示自转
+    let (root, infantry, controlled, activeslapper, spinning) = root_query.get(root).unwrap();
     // 读取机器人所属红蓝阵营
     let team = infantry.team;
     // 读取机器人配置（血量、装甲、射速等）
     let config = infantry.config;
     // bool：true=本机玩家操控的己方机器人
-    let is_local = is_local_ctrl.is_some();
+    let is_local = controlled.is_some();
     // bool：true=主动进攻型AI（敌方英雄机器人）
-    let is_active = has_active_slapper.is_some();
+    let is_active = activeslapper.is_some();
 
     // ===================== 步骤1：给机器人所有子模型批量打上操控/AI标签 =====================
     if is_local {
@@ -427,7 +429,7 @@ pub fn setup_vehicle(
         query.children.iter_descendants(root).for_each(|child_entity| {
             commands.entity(child_entity).insert(Controlled);
         });
-    } else {
+    } else if spinning.is_none() {
         // AI机器人分支：所有子节点挂载 SlapperInfantry（AI自动作战基础标记）
         query.children.iter_descendants(root).for_each(|child_entity| {
             commands.entity(child_entity).insert(SlapperInfantry);

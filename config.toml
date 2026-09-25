@@ -23,9 +23,9 @@ enabled = true
 # ====================== 全局渲染画质配置 ======================
 [render]
 # 全局阴影开关，开启画质更真实，但GPU开销暴涨；生成数据集追求速度时建议关闭
-shadows = true
+shadows = false
 # 主预览相机FXAA抗锯齿，装甲边缘更顺滑，训练模型画面观感更好
-main_camera_fxaa = true
+main_camera_fxaa = false
 # 环境光照照度，数值越大场景越亮；500.0 强光环境，用来生成强光下的装甲数据集
 illuminance = 500.0
 
