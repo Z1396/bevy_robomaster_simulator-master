@@ -10,6 +10,7 @@ use crate::components::{
     InfantryChassis,      // 底盘状态组件：保存底盘yaw偏航角、yaw角速度
     InfantryGimbal,       // 云台状态组件：云台本地偏航、俯仰角
     SlapperInfantry,      // 可切换操控的备用战车标签，所有副战车都挂载
+    Spinning,             // 纯展示战车标签：未被选中时持续自转
     SubscribeAutoAim,     // 全局资源（原子bool）：全局自瞄订阅开关
 };
 // 全局仿真配置结构体，存放战车最大速度、转速、云台限位等参数
@@ -335,6 +336,9 @@ pub fn switch_slapper_control(
     slapper_roots: Query<Entity, (With<Infantry>, With<SlapperInfantry>)>,
     // 查询当前正在激活操控的备用战车根实体
     active_root: Query<Entity, (With<Infantry>, With<SlapperInfantry>, With<ActiveSlapper>)>,
+    // 查询带自转能力的展示战车根实体（test.glb）
+    // Spinning 永久挂载、从不摘除，因此任何时刻查询结果都准确
+    spinning_roots: Query<(), (With<Infantry>, With<Spinning>)>,
 ) {
     // Tab刚按下瞬间执行一次，按住不重复执行
     if !keyboard.just_pressed(KeyCode::Tab) {
@@ -365,6 +369,8 @@ pub fn switch_slapper_control(
         for descendant in children.iter_descendants(current_root) {
             commands.entity(descendant).remove::<ActiveSlapper>();
         }
+        // 旧车若是自转展示车：无需任何操作。
+        // Spinning 一直挂着，根上 ActiveSlapper 移除后 spin 系统下帧自动重新匹配、恢复自转
     }
 
     // ========= 2. 给下一台战车挂载ActiveSlapper =========
@@ -373,6 +379,16 @@ pub fn switch_slapper_control(
     // 递归给所有子实体添加ActiveSlapper，保证子实体查询过滤生效
     for descendant in children.iter_descendants(next_root) {
         commands.entity(descendant).insert(ActiveSlapper);
+    }
+
+    // ========= 3. 新车若是自转展示车：立即刹停，交给玩家操控 =========
+    // Spinning 不摘除（永久能力标记），spin 系统靠 Without<ActiveSlapper> 自动让位；
+    // 这里只需一次性清零角速度、恢复 setup_vehicle 配置的角阻尼50，
+    // 保证车身瞬间停稳，后续 IJKL/UO 操控独占刚体、不被残余自转干扰
+    if spinning_roots.get(next_root).is_ok() {
+        commands
+            .entity(next_root)
+            .insert((AngularVelocity(Vec3::ZERO), AngularDamping(50.0)));
     }
 }
 

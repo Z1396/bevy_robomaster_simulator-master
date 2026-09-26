@@ -263,7 +263,7 @@ pub fn setup(
         // 加载步兵机器人模型 vehicle.glb
         SceneRoot(asset_server.load("vehicle.glb#Scene0")),
         // 出生坐标 (0, 1, 0)，Y=1 抬高避免机器人出生卡在地里
-        Transform::from_xyz(0.0, 1.0, 0.0),
+        Transform::from_xyz(-6.0, 3.0, -2.0),
         // 构造步兵实体：红方队伍、套用三号步兵配置参数（底盘速度、血量、射速、装甲尺寸等）
         Infantry::new(Team::Red, INFANTRY_THREE_CONFIG),
         Controlled, // 标记：这台机器人由本地玩家键盘/鼠标操控
@@ -272,7 +272,7 @@ pub fn setup(
     // AI蓝方步兵
     commands.spawn((
         SceneRoot(asset_server.load("vehicle.glb#Scene0")),
-        Transform::from_xyz(1.0, 1.0, 1.0),
+        Transform::from_xyz(-5.0, 3.0, -7.0),
         Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
         SlapperInfantry, // AI自动击打
     ));
@@ -288,11 +288,11 @@ pub fn setup(
 
     // 测试模型 test.glb：蓝方展示战车，双形态自动切换
     // 挂 SlapperInfantry：参与 Tab 轮换，选中后可被 IJKL/UO 操控
-    // 挂 Spinning：未被 Tab 选中时持续自转展示，选中操控时自动停转（见 spin.rs）
+    // 挂 Spinning（永久能力标记）：未被 Tab 选中时匀速自转，选中时自动刹停让位（见 spin.rs / input.rs）
     // 不挂 Controlled：Controlled 全局只允许一台（Single 查询），否则界面查询 panic
     commands.spawn((
         SceneRoot(asset_server.load("test.glb#Scene0")),
-        Transform::from_xyz(-7.0, 2.0, -5.0),
+        Transform::from_xyz(-7.0, 4.0, -5.0),
         Infantry::new(Team::Blue, INFANTRY_THREE_CONFIG),
         Spinning, SlapperInfantry,
     ));
@@ -477,7 +477,7 @@ pub fn setup_vehicle(
         Collider::compound(vec![(
             Vec3::new(0.0, 0.0, 0.0),          // 圆柱中心相对模型原点的偏移
             Quat::IDENTITY,                           // 不旋转
-            Collider::cylinder(0.3623615, 0.2180),  // (半径, 总高度)
+            Collider::cylinder(0.3623615, 0.2000),  // (半径, 总高度)
         )]),          
         CollisionMargin(0.005), // 碰撞体向外扩充5mm安全余量，防止高速行驶时机器人卡在墙体缝隙里
         vehicle_collision_layers,// 绑定上面定义的碰撞层级规则
